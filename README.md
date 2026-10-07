@@ -60,6 +60,81 @@ from `.env.example`. `.env` is git-ignored. Never put real values in `.env.examp
 
 If a required setting is missing, the service stops at startup with `<NAME> is not set (see .env.example)`.
 
+## Deploy Agents (StreamNative Agent Engine)
+
+Two Claude 3.5 Sonnet agents analyze HN events in real-time:
+
+**Prerequisites**
+- Go 1.25+ (for building ork CLI)
+- StreamNative Cloud access to Agent Engine workspace
+
+**Setup**
+
+1. Install/build ork CLI v0.6.0+
+   ```bash
+   # macOS with Go 1.25+
+   git clone https://github.com/orca-ae/orca-cli
+   cd orca-cli
+   go install ./cmd/ork
+   ```
+
+2. Get Agent Engine endpoint from StreamNative console
+   ```bash
+   snctl -O o-1a54s get workspace <workspace-name> -o jsonpath='{.status.serviceEndpoints[?(@.type=="external")].dnsName}'
+   ```
+
+3. Create agents
+   ```bash
+   export ORCA_BASE_URL=https://<agent-engine-endpoint>
+   export ORCA_ACCESS_TOKEN=<your-api-key>
+   
+   # Subject Extractor: identifies technical topics in titles
+   ork agent create \
+     --name hn-subject-extractor \
+     --model claude-3-5-sonnet-20241022 \
+     --registry-url $ORCA_BASE_URL \
+     --access-token "$ORCA_ACCESS_TOKEN" \
+     --system "Extract technical subjects (AI, LLM, Rust, Python, DevOps, etc.) from HN story titles. Respond with JSON: {\"story_id\": <int>, \"title\": \"<title>\", \"subjects\": [<strings>]}"
+   
+   # Topic Analyzer: finds emerging topics in comments
+   ork agent create \
+     --name hn-topic-analyzer \
+     --model claude-3-5-sonnet-20241022 \
+     --registry-url $ORCA_BASE_URL \
+     --access-token "$ORCA_ACCESS_TOKEN" \
+     --system "Analyze HN comments for emerging topics (model compression, quantization, tools, methodologies). Respond with JSON: {\"story_id\": <int>, \"title\": \"<title>\", \"emerging_topics\": [<strings>], \"ts\": <timestamp>}"
+   ```
+
+4. Create environment and sessions
+   ```bash
+   # Environment
+   ork agent environments create \
+     --name hn-radar-env \
+     --registry-url $ORCA_BASE_URL \
+     --access-token "$ORCA_ACCESS_TOKEN" -o json | jq -r '.id' > env_id.txt
+   
+   # Sessions (get agent IDs from create output above)
+   ork agent sessions create \
+     --agent <subject-extractor-id> --agent-version 1 \
+     --environment-id $(cat env_id.txt) \
+     --title "HN Subject Extraction" \
+     --registry-url $ORCA_BASE_URL \
+     --access-token "$ORCA_ACCESS_TOKEN"
+   
+   ork agent sessions create \
+     --agent <topic-analyzer-id> --agent-version 1 \
+     --environment-id $(cat env_id.txt) \
+     --title "HN Topic Analysis" \
+     --registry-url $ORCA_BASE_URL \
+     --access-token "$ORCA_ACCESS_TOKEN"
+   ```
+
+**Agents Deployed**
+- hn-subject-extractor (ID: agt_5017ZCP32NVMF970W3H3)
+- hn-topic-analyzer (ID: agt_EF5DQG4F7H4YXS9HFWCF)
+- Environment: hn-radar-env (ID: env_MM8SNVRL2ZZYRLJE0E5W)
+- Sessions: Subject extraction (ses_3NXDES7WP15KH0CPP33C), Topic analysis (ses_3FXJW4X2D56SWN97FVD7)
+
 ## Setup (project owner, once)
 
 1. **StreamNative Cloud:** a Kafka cluster with the topic `hn-events`, and a service account with produce permission on it plus the `schema-writer` role. The producer registers the schema on start.
