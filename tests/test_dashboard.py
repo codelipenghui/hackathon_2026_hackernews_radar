@@ -30,3 +30,22 @@ def test_replay_path_rejects_traversal_and_unknown_files(tmp_path):
         assert replay_path("_probe.jsonl") == probe
     finally:
         probe.unlink()
+
+
+def test_live_view_keeps_a_day_of_market_data_but_only_an_hour_of_hn():
+    from dashboard import stream_start_ms
+    now = 100 * 3_600_000
+    assert stream_start_ms("live", "ticks", now) == now - 24 * 3_600_000
+    assert stream_start_ms("live", "hn-events", now) == now - 3_600_000
+    assert stream_start_ms("replay-1759840000", "ticks", now) == 1759840000000
+
+
+def test_research_now_uses_the_latest_earnings_8k():
+    from dashboard import latest_earnings_filing
+    sub = {"cik": "1045810", "name": "NVIDIA CORP", "filings": {"recent": {
+        "accessionNumber": ["0001045810-26-000090", "0001045810-26-000073", "0001045810-26-000041"],
+        "form": ["4", "8-K", "8-K"], "items": ["", "2.02,9.01", "2.02,9.01"],
+        "acceptanceDateTime": ["2026-09-01T10:00:00.000Z", "2026-08-26T20:21:00.000Z", "2026-05-27T20:20:00.000Z"]}}}
+    f = latest_earnings_filing(sub, "NVDA")
+    assert (f["run"], f["accession"], f["on_demand"]) == ("live", "0001045810-26-000073", True)
+    assert latest_earnings_filing({**sub, "filings": {"recent": {k: v[:1] for k, v in sub["filings"]["recent"].items()}}}, "NVDA") is None

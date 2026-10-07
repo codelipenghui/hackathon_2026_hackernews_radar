@@ -14,19 +14,22 @@ EARNINGS_ITEM = "2.02"  # 8-K Item 2.02: Results of Operations and Financial Con
 class Router:
     def __init__(self, watchlist):
         self.watchlist = watchlist
-        self.seen = set()  # (run, ticker)
+        self.seen = set()  # (run, ticker), or (run, request_id) for on-demand research
 
     def on_filing(self, f):
         ticker = f["ticker"]
         is_8k_earnings = f["form"] == "8-K" and EARNINGS_ITEM in f["items"]
         if ticker not in self.watchlist or not (is_8k_earnings or f["form"] in ("10-Q", "10-K")):
             return None
-        if (f["run"], ticker) in self.seen:
+        request_id = f"{ticker}-{f['accession']}"
+        # the cockpit's "Research now" asks for a specific filing: allow it once per filing, not once per ticker
+        key = (f["run"], request_id) if f.get("on_demand") else (f["run"], ticker)
+        if key in self.seen:
             return None
-        self.seen.add((f["run"], ticker))
+        self.seen.add(key)
         # anchor research to the filing, so a replay of an August report is judged with August information
         filed = datetime.fromtimestamp(f["ts"] / 1000, timezone.utc).date()
-        return {"run": f["run"], "ts": f["ts"], "request_id": f"{ticker}-{f['accession']}", "ticker": ticker,
+        return {"run": f["run"], "ts": f["ts"], "request_id": request_id, "ticker": ticker,
                 "skill": "earnings-review", "args": f"{ticker} earnings filed {filed}",
                 "reason": f"8-K Item {EARNINGS_ITEM}" if is_8k_earnings else f["form"],
                 "trigger": {"topic": "filings", "accession": f["accession"]}}

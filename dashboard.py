@@ -5,6 +5,8 @@ GET  /events?topics=a,b&run=R   one Kafka consumer per tab over partition 0 of e
                                 passes, it is the live backdrop. The SSE id carries the offsets, so EventSource
                                 reconnects resume exactly; with one topic it is the bare offset, as the radar expects.
 POST /replay?file=F&speed=N     plays data/replays/F into Kafka as a new run and returns {"run": ...}
+POST /research?ticker=T         "Research now": publishes T's latest earnings 8-K (from SEC) to `filings` as a live,
+                                on-demand filing, so the router starts ai-berkshire on it like any other filing
 """
 import json
 import os
@@ -16,7 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 from kafka import KafkaConsumer, TopicPartition
 
 import replay
-from common import KAFKA, LIVE, ensure_topics, new_replay_run, producer, run_start_ms
+from common import HOUR_MS, KAFKA, LIVE, emit, ensure_topics, load_watchlist, new_replay_run, now_ms, producer, run_start_ms
 
 PORT = int(os.environ.get("PORT", 8080))
 HERE = Path(__file__).parent
@@ -25,6 +27,7 @@ PAGES = {"/": ("cockpit.html", "text/html; charset=utf-8"),
          "/radar": ("index.html", "text/html; charset=utf-8"),
          "/watchlist.json": ("watchlist.json", "application/json")}
 RUNS = [LIVE]       # live, then replays started from this dashboard, newest first
+LIVE_LOOKBACK_MS = 24 * HOUR_MS  # live prices and research keep the day; hn-events stays at the last hour (volume)
 PRODUCER = None     # created in main(); only POST /replay writes to Kafka
 
 
@@ -38,6 +41,23 @@ def parse_last_id(value, topics):
 
 def format_id(offsets, topics):
     return str(offsets[topics[0]]) if len(topics) == 1 else json.dumps(offsets, separators=(",", ":"))
+
+
+def stream_start_ms(run, topic, now=None):
+    if run == LIVE and topic != "hn-events":
+        return (now_ms() if now is None else now) - LIVE_LOOKBACK_MS
+    return run_start_ms(run, now)
+
+
+def latest_earnings_filing(sub, ticker):
+    """The newest 8-K Item 2.02 in SEC submissions, as a live on-demand filings message (None if there is none)."""
+    from record import filing_from_submissions, list_earnings
+
+    found = list_earnings(sub, since_ms=0)
+    if not found:
+        return None
+    accession, _ = max(found, key=lambda x: x[1])
+    return {**filing_from_submissions(sub, ticker, accession), "run": LIVE, "on_demand": True}
 
 
 def replay_path(name):
@@ -68,6 +88,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         url = urlsplit(self.path)
         q = parse_qs(url.query)
+        if url.path == "/research":
+            return self.research_now(q.get("ticker", [""])[0])
         path = replay_path(q.get("file", [""])[0])
         if url.path != "/replay" or not path:
             return self.send_error(400, "unknown replay file")
@@ -76,6 +98,22 @@ class Handler(BaseHTTPRequestHandler):
         threading.Thread(target=replay.play, args=(path, float(q.get("speed", ["300"])[0]), PRODUCER, run),
                          daemon=True).start()
         self.send_json({"run": run})
+
+    def research_now(self, ticker):
+        from record import submissions
+
+        watchlist = load_watchlist()
+        if ticker not in watchlist:
+            return self.send_error(400, "ticker not on the watchlist")
+        try:
+            filing = latest_earnings_filing(submissions(watchlist[ticker]["cik"]), ticker)
+        except Exception as e:
+            return self.send_error(502, f"SEC lookup failed: {e!r}"[:200])
+        if not filing:
+            return self.send_error(404, "no earnings 8-K found")
+        emit(PRODUCER, "filings", ticker, filing)
+        PRODUCER.flush()
+        self.send_json({"ticker": ticker, "accession": filing["accession"], "ts": filing["ts"]})
 
     def send_json(self, obj):
         body = json.dumps(obj).encode()
@@ -96,7 +134,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             consumer.assign(tps)
             offsets = parse_last_id(self.headers.get("Last-Event-ID"), topics)  # sent by EventSource on reconnect
-            starts = consumer.offsets_for_times({tp: run_start_ms(run or LIVE) for tp in tps})
+            starts = consumer.offsets_for_times({tp: stream_start_ms(run or LIVE, tp.topic) for tp in tps})
             for tp in tps:
                 if tp.topic in offsets:
                     consumer.seek(tp, offsets[tp.topic] + 1)

@@ -41,3 +41,11 @@ def test_replaying_the_same_filing_in_a_new_run_triggers_again():
 def test_research_is_anchored_to_the_filing_date_not_today():
     # a replay of an August filing must be priced with August information, not "latest" (October) data
     assert Router(WATCH).on_filing({**F, "ts": 1787775679000})["args"] == "MU earnings filed 2026-08-26"
+
+
+def test_on_demand_research_bypasses_the_per_ticker_limit_but_not_the_same_filing():
+    r = Router(WATCH)
+    assert r.on_filing({**F, "run": "live"})
+    other = {**F, "run": "live", "accession": "0000723125-25-000099", "on_demand": True}
+    assert r.on_filing(other)["request_id"] == "MU-0000723125-25-000099"
+    assert r.on_filing(other) is None

@@ -78,6 +78,8 @@ class Trader:
 
     def on_tick(self, t):
         book, ticker, price = self.books[t["run"]], t["ticker"], t["price"]
+        if book.bars[ticker] and t["ts"] <= book.bars[ticker][-1]["ts"]:
+            return []  # a bar we already have (e.g. the live price feed restarted and re-sent its session)
         book.bars[ticker].append(t)
         out = []
         pos = book.positions.get(ticker)

@@ -154,3 +154,10 @@ def test_runs_have_separate_books():
     assert trader.pnl(trader.books["replay-2"], "replay-2", 0)["equity"] == 100_000
     out = feed(trader, [(p, 1000) for p in OPENING] + [(154, 2000)], run="replay-2")
     assert orders(out)[0]["qty"] == 125  # a fresh $100k book, same sizing as run 1
+
+
+def test_repeated_or_out_of_order_ticks_are_ignored():
+    trader = opened()
+    assert trader.on_tick(tick(5, 150)) == []          # same bar again (a restarted price feed)
+    assert trader.on_tick(tick(2, 999)) == []          # older bar
+    assert len(trader.books["replay-1"].bars["MU"]) == 6
