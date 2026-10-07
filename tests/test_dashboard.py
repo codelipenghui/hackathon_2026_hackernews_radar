@@ -49,3 +49,24 @@ def test_research_now_uses_the_latest_earnings_8k():
     f = latest_earnings_filing(sub, "NVDA")
     assert (f["run"], f["accession"], f["on_demand"]) == ("live", "0001045810-26-000073", True)
     assert latest_earnings_filing({**sub, "filings": {"recent": {k: v[:1] for k, v in sub["filings"]["recent"].items()}}}, "NVDA") is None
+
+
+def test_history_uses_the_right_bar_size_and_caches_for_a_minute():
+    from datetime import datetime, timezone
+    import pytest
+    from dashboard import History
+    calls = []
+
+    def fetch(ticker, period, interval):
+        calls.append((ticker, period, interval))
+        return [(datetime(2026, 10, 6, 14, 0, tzinfo=timezone.utc), 236.5, 1000)]
+    clock = iter([0, 30, 61]).__next__
+    h = History(fetch, clock=clock)
+    first = h.get("NVDA", "5d")
+    assert calls == [("NVDA", "5d", "15m")] and first[0]["price"] == 236.5 and first[0]["ticker"] == "NVDA"
+    assert h.get("NVDA", "5d") == first and len(calls) == 1      # cached
+    h.get("NVDA", "5d")
+    assert len(calls) == 2                                       # refreshed after 60 s
+    assert History(fetch).get("NVDA", "1mo") and calls[-1] == ("NVDA", "1mo", "1d")
+    with pytest.raises(ValueError):
+        h.get("NVDA", "10y")

@@ -5,6 +5,7 @@ GET  /events?topics=a,b&run=R   one Kafka consumer per tab over partition 0 of e
                                 passes, it is the live backdrop. The SSE id carries the offsets, so EventSource
                                 reconnects resume exactly; with one topic it is the bare offset, as the radar expects.
 POST /replay?file=F&speed=N     plays data/replays/F into Kafka as a new run and returns {"run": ...}
+GET  /history?ticker=T&range=5d|1mo  older bars for the chart's 5D (15-minute) and 1M (daily) views, from yfinance
 POST /research?ticker=T         "Research now": publishes T's latest earnings 8-K (from SEC) to `filings` as a live,
                                 on-demand filing, so the router starts ai-berkshire on it like any other filing
 """
@@ -60,6 +61,37 @@ def latest_earnings_filing(sub, ticker):
     return {**filing_from_submissions(sub, ticker, accession), "run": LIVE, "on_demand": True}
 
 
+class History:
+    """Chart history from yfinance, cached briefly: it isn't a stream, so it bypasses Kafka."""
+    RANGES = {"5d": "15m", "1mo": "1d"}
+    TTL_S = 60
+
+    def __init__(self, fetch, clock=None):
+        import time
+        self.fetch, self.clock, self.cache = fetch, clock or time.time, {}
+
+    def get(self, ticker, period):
+        if period not in self.RANGES:
+            raise ValueError(f"range must be one of {sorted(self.RANGES)}")
+        now, hit = self.clock(), self.cache.get((ticker, period))
+        if hit and now - hit[0] < self.TTL_S:
+            return hit[1]
+        from record import ticks_from_bars
+        ticks = ticks_from_bars(self.fetch(ticker, period, self.RANGES[period]), ticker)
+        self.cache[(ticker, period)] = (now, ticks)
+        return ticks
+
+
+def fetch_history(ticker, period, interval):
+    import yfinance as yf
+
+    df = yf.Ticker(ticker).history(period=period, interval=interval, prepost=False)
+    return [(when.to_pydatetime(), row.Close, row.Volume) for when, row in df.iterrows()]
+
+
+HISTORY = History(fetch_history)
+
+
 def replay_path(name):
     path = REPLAYS / name
     return path if name and path.parent == REPLAYS and path.is_file() else None
@@ -75,6 +107,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(sorted(p.name for p in REPLAYS.glob("*.jsonl")))
         if url.path == "/runs":
             return self.send_json(RUNS)
+        if url.path == "/history":
+            ticker = q.get("ticker", [""])[0]
+            if ticker not in load_watchlist():
+                return self.send_error(400, "ticker not on the watchlist")
+            try:
+                return self.send_json(HISTORY.get(ticker, q.get("range", [""])[0]))
+            except ValueError as e:
+                return self.send_error(400, str(e))
+            except Exception as e:
+                return self.send_error(502, f"history lookup failed: {e!r}"[:200])
         if url.path not in PAGES:
             return self.send_error(404)
         name, ctype = PAGES[url.path]

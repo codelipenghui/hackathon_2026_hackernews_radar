@@ -39,18 +39,30 @@
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 8px 0; }
   .num { font-variant-numeric: tabular-nums; }
   .up { color: var(--buy); } .down { color: var(--sell); }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; color: var(--dim); }
+  .seg button.on { background: #1a2531; color: var(--text); }
+  .live-only, .replay-only { display: inline-flex; align-items: center; gap: 12px; }
+  body.replay .live-only, body:not(.replay) .replay-only { display: none; }
+  .tier { display: inline-block; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; font-size: 11px; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; grid-template-rows: none; } }
 </style>
 </head>
 <body>
 <header>
   <span class="logo"><b>α</b>ALPHA RADAR</span>
-  <label class="dim">run <select id="run"></select></label>
-  <label class="dim">day <select id="file"></select></label>
-  <label class="dim">speed <select id="speed"><option>300</option><option>600</option><option>60</option></select>×</label>
-  <button id="go">▶ Replay earnings day</button>
-  <label class="dim">ticker <select id="ticker"></select></label>
-  <button id="rnow" title="Run ai-berkshire now on this company's latest earnings 8-K (live run only)">🔬 Research now</button>
+  <span class="seg" id="mode"><button data-mode="live" class="on">● Live</button><button data-mode="replay">Replay</button></span>
+  <span class="live-only">
+    <label class="dim">ticker <select id="ticker"></select></label>
+    <span class="seg" id="range"><button data-range="1d" class="on">1D</button><button data-range="5d">5D</button><button data-range="1mo">1M</button></span>
+    <button id="rnow" title="Run ai-berkshire now on this company's latest earnings 8-K">🔬 Research now</button>
+  </span>
+  <span class="replay-only">
+    <label class="dim">day <select id="file"></select></label>
+    <label class="dim">speed <select id="speed"><option>300</option><option>600</option><option>60</option></select>×</label>
+    <button id="go">▶ Replay</button>
+    <label class="dim">run <select id="run"></select></label>
+  </span>
   <a href="radar" target="_blank" class="dim">HN radar ↗</a>
   <span id="status"><i></i><b id="state">CONNECTING</b></span>
 </header>
@@ -82,7 +94,8 @@ const usd = x => x == null ? '–' : '$' + Number(x).toLocaleString('en-US', {mi
 const pct = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(2) + '%';
 const et = ts => new Date(ts).toLocaleString('en-US', {timeZone: 'America/New_York', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', hour12: false}) + ' ET';
-const TOPICS = 'filings,ticks,news,hn-events,skill-requests,research-verdicts,orders,fills,pnl';
+const TOPICS = 'filings,ticks,news,hn-events,skill-requests,research-verdicts,news-triage,orders,fills,pnl';
+const TIER = {quick: '⚡ quick', deep: '🔬 deep', news: '📰 news'};
 const CASH0 = 100000;
 
 let watch = {};
@@ -96,12 +109,12 @@ const mentions = title => Object.entries(watch)
   .map(([t]) => t);
 
 // ---- state for the selected run, rebuilt from Kafka on every (re)connect ----
-let S, es, RUN = 'live';
+let S, es, RUN = 'live', RANGE = '1d', hist = {key: '', ticks: [], at: 0};
 const focus = () => $('#ticker').value;                 // the ticker on the chart
 const ticksOf = tk => S.ticksBy.get(tk) || [];
 function reset() {
-  S = {filing: null, ticksBy: new Map(), started: null, verdict: null, requested: null, orders: new Map(), fills: [], pnl: null,
-       news: [], newsSeen: new Set(), events: []};
+  S = {filing: null, ticksBy: new Map(), running: new Map(), verdict: null, failed: null, requested: null, orders: new Map(),
+       fills: [], pnl: null, news: [], newsSeen: new Set(), events: []};
 }
 
 function ingest(m) {
@@ -129,10 +142,17 @@ function ingest(m) {
     case 'skill-requests':
       S.events.push([m.ts, '⚡', `router: ${m.reason} → /${m.skill} ${m.args}`]);
       break;
-    case 'research-verdicts':
-      if (m.status === 'started') { S.started = {...m, wall: Date.now()}; S.verdict = null; S.events.push([m.ts, '🔬', `ai-berkshire /${m.skill} started`]); }
-      else if (m.status === 'done') { S.verdict = m; S.events.push([m.ts, '⚖️', `verdict ${m.verdict} ${m.score}/5 · buy ${usd(m.buy_low)}–${usd(m.buy_high)} · ${m.source}`]); }
-      else { S.verdict = m; S.events.push([m.ts, '⚠️', `research failed: ${m.error || ''}`]); }
+    case 'research-verdicts': {
+      m.tier = m.tier || 'deep';  // verdicts from before tiers existed were all /earnings-review
+      const tier = TIER[m.tier] || m.tier;
+      if (m.status === 'started') { S.running.set(m.tier, {...m, wall: Date.now()}); S.events.push([m.ts, '🔬', `${tier} research started`]); break; }
+      S.running.delete(m.tier);
+      if (m.status === 'done') { S.verdict = m; S.failed = null; S.events.push([m.ts, '⚖️', `${tier} verdict ${m.verdict} ${m.score}/5 · buy ${usd(m.buy_low)}–${usd(m.buy_high)} · ${m.source}`]); }
+      else { S.failed = m; S.events.push([m.ts, '⚠️', `${tier} research failed: ${m.error || ''}`]); }
+      break;
+    }
+    case 'news-triage':
+      S.events.push([m.ts, '📰', `${m.material ? 'material' : 'not material'} (${m.ticker}): ${m.reason}${m.material ? ' → news re-check' : ''} — “${m.headline}”`, m.url]);
       break;
     case 'orders': S.orders.set(m.order_id, m); break;
     case 'fills': S.fills.push(m); break;
@@ -150,7 +170,6 @@ function addNews(n) {  // pollers re-send their feed after a restart: show each 
 
 function connect(run) {
   RUN = run;
-  $('#rnow').disabled = run !== 'live';
   es?.close();
   reset();
   es = new EventSource(`events?topics=${TOPICS}&run=${encodeURIComponent(run)}`);
@@ -160,9 +179,31 @@ function connect(run) {
 }
 
 async function loadRuns(selected) {
-  const runs = await (await fetch('runs')).json();
+  const runs = (await (await fetch('runs')).json()).filter(r => r !== 'live');
   $('#run').innerHTML = runs.map(r => `<option ${r === selected ? 'selected' : ''}>${esc(r)}</option>`).join('');
+  return runs;
 }
+const seg = (id, value) => document.querySelectorAll(`#${id} button`).forEach(b => b.classList.toggle('on', Object.values(b.dataset)[0] === value));
+async function setMode(mode) {
+  document.body.classList.toggle('replay', mode === 'replay');
+  seg('mode', mode);
+  if (mode === 'live') return connect('live');
+  const runs = await loadRuns();
+  if (runs.length) return connect(runs[0]);  // show the latest replay; nothing starts until ▶
+  es?.close(); reset(); RUN = 'replay'; $('#state').textContent = 'REPLAY';
+}
+document.querySelectorAll('#mode button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
+document.querySelectorAll('#range button').forEach(b => b.onclick = () => { RANGE = b.dataset.range; seg('range', RANGE); loadHistory(); });
+$('#ticker').onchange = () => loadHistory();
+async function loadHistory(force) {  // 5D / 1M come from /history; 1D is the live stream
+  if (RANGE === '1d') return;
+  const key = `${focus()}|${RANGE}`;
+  if (!force && hist.key === key && Date.now() - hist.at < 60e3) return;
+  hist = {key, ticks: [], at: Date.now(), loading: true};
+  const resp = await fetch(`history?ticker=${encodeURIComponent(focus())}&range=${RANGE}`);
+  if (hist.key === key) hist = {key, ticks: resp.ok ? await resp.json() : [], at: Date.now(), error: !resp.ok};
+}
+setInterval(() => loadHistory(), 60e3);
 $('#run').onchange = e => connect(e.target.value);
 $('#go').onclick = async () => {
   $('#go').disabled = true;  // a double-click must not start two replays
@@ -177,7 +218,7 @@ $('#rnow').onclick = async () => {
   const tk = focus();
   $('#rnow').disabled = true;
   const resp = await fetch(`research?ticker=${encodeURIComponent(tk)}`, {method: 'POST'})
-    .finally(() => setTimeout(() => $('#rnow').disabled = RUN !== 'live', 3000));
+    .finally(() => setTimeout(() => $('#rnow').disabled = false, 3000));
   if (!resp.ok) return alert(`Research request failed: ${resp.status} ${resp.statusText}`);
   const r = await resp.json();
   S.requested = {...r, wall: Date.now()};
@@ -205,15 +246,17 @@ function drawChart() {
   const [g, W, H] = fit($('#chart'));
   g.clearRect(0, 0, W, H);
   g.font = '11px ui-monospace, Menlo, monospace';
-  const tk = focus(), T = ticksOf(tk);
+  const tk = focus(), daily = RUN !== 'live' || RANGE === '1d', T = daily ? ticksOf(tk) : hist.ticks;
   if (T.length < 2) {
     g.fillStyle = '#6f8296';
-    g.fillText(RUN === 'live' ? `Waiting for live ${tk} prices (prices.py publishes 5-minute bars)…` : 'No prices yet: pick a recorded day and press Replay', 12, 20);
+    g.fillText(RUN !== 'live' ? 'No prices yet: pick a recorded day and press ▶ Replay'
+      : !daily ? (hist.error ? `Could not load ${tk} history` : `Loading ${tk} history…`)
+      : `Waiting for live ${tk} prices (prices.py publishes 5-minute bars)…`, 12, 20);
     return;
   }
   const v = S.verdict?.status === 'done' && S.verdict.ticker === tk ? S.verdict : null;
   const pos = S.pnl?.positions?.[T[0].ticker];
-  const piv = S.filing?.ticker === tk ? pivotOf(T, S.filing.ts) : null;
+  const piv = daily && S.filing?.ticker === tk ? pivotOf(T, S.filing.ts) : null;
   const levels = [...T.map(t => t.price), v?.buy_low, v?.buy_high, pos?.stop, piv].filter(x => x != null);
   let lo = Math.min(...levels), hi = Math.max(...levels);
   const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
@@ -267,23 +310,23 @@ function drawChart() {
 }
 
 function renderResearch() {
-  const v = S.verdict, s = S.started;
-  if (v?.status === 'done') {
+  const v = S.verdict;
+  const clock = w => { const s = Math.round((Date.now() - w) / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+  const running = [...S.running.values()].map(r => `<div class="dim" style="margin-top:6px">${esc(TIER[r.tier] || r.tier)} research on ${esc(r.ticker)} running… <span class="num">${clock(r.wall)}</span>${
+    r.tier === 'deep' ? ' · ai-berkshire /earnings-review, 10–30 min; replaces the verdict when done' : ''}</div>`).join('');
+  const failed = S.failed ? `<div class="down" style="margin-top:6px">${esc(TIER[S.failed.tier] || S.failed.tier)} research failed <span class="dim">${esc(S.failed.error)}</span></div>` : '';
+  if (v) {
     const m = v.masters;
-    html('#rsrc', `${esc(v.source)} · ${v.duration_s}s`);
-    html('#research', `<div><span class="badge ${esc(v.verdict)}">${esc(v.verdict)}</span> <b class="num">${v.score}/5</b> · ${esc(v.ticker)} /${esc(v.skill)}</div>
+    html('#rsrc', `${esc(TIER[v.tier] || v.tier)} · ${esc(v.source)} · ${esc(v.duration_s)}s`);
+    html('#research', `<div><span class="badge ${esc(v.verdict)}">${esc(v.verdict)}</span> <b class="num">${esc(v.score)}/5</b> · ${esc(v.ticker)} <span class="tier">${esc(TIER[v.tier] || v.tier)}</span></div>
       <div class="kv"><span class="dim">Buffett</span><span>${m.buffett}</span><span class="dim">Munger</span><span>${m.munger}</span>
       <span class="dim">Duan</span><span>${m.duan}</span><span class="dim">Li Lu</span><span>${m.lilu}</span>
       <span class="dim">Buy band</span><span>${usd(v.buy_low)} – ${usd(v.buy_high)}</span><span class="dim">Target</span><span>${usd(v.target)}</span></div>
       <div>${esc(v.summary)}</div>
       ${v.red_lines.length ? `<div class="dim" style="margin-top:6px">Red lines: ${v.red_lines.map(esc).join(' · ')}</div>` : ''}
-      <div class="dim" style="margin-top:6px">${esc(v.report_path)}</div>`);
-  } else if (v?.status === 'failed') {
-    html('#rsrc', ''); html('#research', `<span class="down">Research failed</span> <span class="dim">${esc(v.error)}</span>`);
-  } else if (s) {
-    const secs = Math.round((Date.now() - s.wall) / 1000);
-    html('#rsrc', ''); html('#research', `🔬 4 masters researching <b>${esc(s.ticker)}</b>… <span class="num">${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}</span>
-      <div class="dim">Buffett · Munger · Duan Yongping · Li Lu are reading the filing</div>`);
+      ${v.report_path ? `<div class="dim" style="margin-top:6px">${esc(v.report_path)}</div>` : ''}${running}${failed}`);
+  } else if (S.running.size || S.failed) {
+    html('#rsrc', ''); html('#research', `<div>Buffett · Munger · Duan Yongping · Li Lu are reading the filing</div>${running}${failed}`);
   } else if (S.requested) {
     const r = S.requested;
     html('#rsrc', ''); html('#research', `Requested research on <b>${esc(r.ticker)}</b>: earnings 8-K filed ${esc(et(r.ts))} (${esc(r.accession)}).
@@ -326,8 +369,7 @@ function render() {
 }
 
 reset();
-loadRuns('live');
-connect('live');
+setMode('live');
 setInterval(render, 500);
 </script>
 </body>
