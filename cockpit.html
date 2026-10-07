@@ -113,7 +113,8 @@ function ingest(m) {
       break;
     case 'ticks':
       if (!S.ticksBy.has(m.ticker)) S.ticksBy.set(m.ticker, []);
-      S.ticksBy.get(m.ticker).push(m);
+      const bars = S.ticksBy.get(m.ticker);
+      if (!bars.length || m.ts > bars.at(-1).ts) bars.push(m);  // the price feed re-sends its session after a restart
       break;
     case 'news':
       if (m.ticker !== '_') addNews({ts: m.ts, src: m.source, tk: m.ticker, text: m.headline, url: m.url});
@@ -216,11 +217,21 @@ function drawChart() {
   const levels = [...T.map(t => t.price), v?.buy_low, v?.buy_high, pos?.stop, piv].filter(x => x != null);
   let lo = Math.min(...levels), hi = Math.max(...levels);
   const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
-  const L = 8, R = W - 70, TOP = 8, B = H - 20;
+  const L = 62, R = W - 92, TOP = 8, B = H - 20;
   const x = i => L + (R - L) * i / (T.length - 1), y = p => B - (B - TOP) * (p - lo) / (hi - lo);
+  // price axis: gridlines at round steps, labelled on the left
+  const raw = (hi - lo) / 5, mag = 10 ** Math.floor(Math.log10(raw)), n = raw / mag;
+  const step = (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10) * mag;
+  g.textAlign = 'right';
+  for (let p = Math.ceil(lo / step) * step; p <= hi; p += step) {
+    g.strokeStyle = '#ffffff10'; g.beginPath(); g.moveTo(L, y(p)); g.lineTo(R, y(p)); g.stroke();
+    g.fillStyle = '#6f8296'; g.fillText('$' + p.toFixed(step < 1 ? 2 : 0), L - 6, y(p) + 4);
+  }
+  g.textAlign = 'left';
+  const tags = [];  // right-edge labels, spread apart below so they never overlap
   const hline = (p, color, dash, label) => {
     g.strokeStyle = color; g.setLineDash(dash); g.beginPath(); g.moveTo(L, y(p)); g.lineTo(R, y(p)); g.stroke(); g.setLineDash([]);
-    g.fillStyle = color; g.fillText(label, R + 4, y(p) + 4);
+    tags.push({y: y(p), color, label});
   };
   if (v?.buy_low != null) { g.fillStyle = '#3ddc8422'; g.fillRect(L, y(v.buy_high), R - L, y(v.buy_low) - y(v.buy_high)); }
   T.forEach((t, i) => { if (t.session !== 'regular') { g.fillStyle = '#ffffff06'; g.fillRect(x(i) - (R - L) / T.length / 2, TOP, (R - L) / T.length, B - TOP); } });
@@ -240,6 +251,15 @@ function drawChart() {
     g.fillStyle = buy ? '#3ddc84' : '#ff5c6c';
     g.beginPath(); g.moveTo(px, py + 4 * d); g.lineTo(px - 6, py + 13 * d); g.lineTo(px + 6, py + 13 * d); g.fill();
     g.fillText(S.orders.get(f.order_id)?.rule || f.side, px + 8, py + 13 * d);
+  }
+  const last = T.at(-1).price;
+  tags.push({y: y(last), color: '#d3dce6', label: `$${last.toFixed(2)}`, box: true});
+  tags.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < tags.length; i++) tags[i].y = Math.max(tags[i].y, tags[i - 1].y + 15);
+  for (const t of tags) {
+    if (t.box) { g.fillStyle = t.color; g.fillRect(R + 2, t.y - 9, g.measureText(t.label).width + 8, 16); g.fillStyle = '#070b10'; }
+    else g.fillStyle = t.color;
+    g.fillText(t.label, R + 6, t.y + 4);
   }
   g.fillStyle = '#6f8296';
   g.fillText(et(T[0].ts), L, H - 4);
