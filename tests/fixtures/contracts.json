@@ -1,0 +1,45 @@
+{
+  "filings": [
+    {"run": "replay-1759840000", "ts": 1758657912000, "ticker": "MU", "cik": "0000723125", "form": "8-K",
+     "items": ["2.02", "9.01"], "accession": "0000723125-25-000041",
+     "url": "https://www.sec.gov/Archives/edgar/data/723125/000072312525000041/",
+     "title": "MICRON TECHNOLOGY INC - 8-K"}
+  ],
+  "ticks": [
+    {"run": "replay-1759840000", "ts": 1758658200000, "ticker": "MU", "price": 157.42, "volume": 182300, "session": "post"},
+    {"run": "replay-1759840000", "ts": 1758720600000, "ticker": "MU", "price": 161.2, "volume": 950000, "session": "regular", "last": true}
+  ],
+  "news": [
+    {"run": "replay-1759840000", "ts": 1758657960000, "ticker": "MU", "source": "globenewswire",
+     "headline": "Micron Technology, Inc. Reports Results for the Fourth Quarter and Full Year of Fiscal 2025",
+     "url": "https://investors.micron.com/news-releases"}
+  ],
+  "skill-requests": [
+    {"run": "replay-1759840000", "ts": 1758657912000, "request_id": "MU-0000723125-25-000041", "ticker": "MU",
+     "skill": "earnings-review", "args": "MU latest", "reason": "8-K Item 2.02",
+     "trigger": {"topic": "filings", "accession": "0000723125-25-000041"}}
+  ],
+  "research-verdicts": [
+    {"run": "replay-1759840000", "ts": 1758657912000, "request_id": "MU-0000723125-25-000041", "ticker": "MU",
+     "status": "started", "skill": "earnings-review"},
+    {"run": "replay-1759840000", "ts": 1758657912000, "request_id": "MU-0000723125-25-000041", "ticker": "MU",
+     "status": "done", "source": "cache", "skill": "earnings-review", "verdict": "PASS", "score": 4.3,
+     "masters": {"buffett": 4.4, "munger": 3.5, "duan": 3.7, "lilu": 4.0},
+     "buy_low": 140.0, "buy_high": 160.0, "target": 195.0,
+     "red_lines": ["gross margin below 40%", "HBM share loss to Samsung"],
+     "summary": "Record HBM revenue; guidance above consensus.",
+     "report_path": "data/reports/MU-0000723125-25-000041.md", "duration_s": 312}
+  ],
+  "orders": [
+    {"run": "replay-1759840000", "ts": 1758720600000, "order_id": "o-17", "ticker": "MU", "side": "BUY", "qty": 120,
+     "rule": "livermore_pivot", "reason": "broke 30-min pivot 158.10 on 1.8x volume; inside band 140-160",
+     "request_id": "MU-0000723125-25-000041"}
+  ],
+  "fills": [
+    {"run": "replay-1759840000", "ts": 1758720600000, "order_id": "o-17", "ticker": "MU", "side": "BUY", "qty": 120, "price": 158.25}
+  ],
+  "pnl": [
+    {"run": "replay-1759840000", "ts": 1758720600000, "cash": 81010.0, "equity": 100412.5, "realized": 0.0,
+     "unrealized": 412.5, "positions": {"MU": {"qty": 120, "avg": 158.25, "last": 161.69, "stop": 151.9}}}
+  ]
+}

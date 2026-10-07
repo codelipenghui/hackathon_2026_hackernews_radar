@@ -1,0 +1,15 @@
+{
+  "MU":   {"cik": "0000723125", "names": ["Micron"], "aliases": []},
+  "NVDA": {"cik": "0001045810", "names": ["NVIDIA", "Nvidia"], "aliases": []},
+  "AMD":  {"cik": "0000002488", "names": ["AMD", "Advanced Micro Devices"], "aliases": []},
+  "AVGO": {"cik": "0001730168", "names": ["Broadcom"], "aliases": []},
+  "MRVL": {"cik": "0001835632", "names": ["Marvell"], "aliases": []},
+  "ORCL": {"cik": "0001341439", "names": ["Oracle"], "aliases": []},
+  "GOOG": {"cik": "0001652044", "names": ["Alphabet", "Google"], "aliases": []},
+  "META": {"cik": "0001326801", "names": ["Meta Platforms"], "aliases": []},
+  "MSFT": {"cik": "0000789019", "names": ["Microsoft"], "aliases": []},
+  "AMZN": {"cik": "0001018724", "names": ["Amazon"], "aliases": []},
+  "CRM":  {"cik": "0001108524", "names": ["Salesforce"], "aliases": []},
+  "NOW":  {"cik": "0001373715", "names": ["ServiceNow"], "aliases": []},
+  "PLTR": {"cik": "0001321655", "names": ["Palantir"], "aliases": []}
+}

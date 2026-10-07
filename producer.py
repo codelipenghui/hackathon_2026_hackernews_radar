@@ -46,7 +46,7 @@ def fetch_item(item_id):
 
 
 def emit(kind, key, **data):
-    producer.send(TOPIC, key=str(key), value={"kind": kind, "ts": int(time.time() * 1000), **data})
+    producer.send(TOPIC, key=str(key), value={"kind": kind, "run": "live", "ts": int(time.time() * 1000), **data})
 
 
 def follow(path, on_change):

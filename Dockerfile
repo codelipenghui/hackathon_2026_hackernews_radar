@@ -1,5 +1,6 @@
 FROM python:3.13-slim
-RUN pip install --no-cache-dir kafka-python==3.0.11
+COPY requirements.txt /tmp/
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
-COPY producer.py dashboard.py index.html ./
+COPY . .
