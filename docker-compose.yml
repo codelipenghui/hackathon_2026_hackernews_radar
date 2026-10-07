@@ -43,5 +43,33 @@ services:
     environment: { KAFKA: "kafka:19092" }
     depends_on: { kafka: { condition: service_healthy } }
 
+  edgar:  # SEC latest filings -> filings
+    build: .
+    command: python edgar.py
+    restart: unless-stopped
+    environment: { KAFKA: "kafka:19092", SEC_UA: "${SEC_UA:-AlphaRadar hackathon contact@example.com}" }
+    depends_on: { kafka: { condition: service_healthy } }
+
+  news:  # newswire RSS -> news
+    build: .
+    command: python news.py
+    restart: unless-stopped
+    environment: { KAFKA: "kafka:19092" }
+    depends_on: { kafka: { condition: service_healthy } }
+
+  router:  # filings -> skill-requests
+    build: .
+    command: python router.py
+    restart: unless-stopped
+    environment: { KAFKA: "kafka:19092" }
+    depends_on: { kafka: { condition: service_healthy } }
+
+  trader:  # research-verdicts + ticks -> orders, fills, pnl
+    build: .
+    command: python trader.py
+    restart: unless-stopped
+    environment: { KAFKA: "kafka:19092" }
+    depends_on: { kafka: { condition: service_healthy } }
+
 volumes:
   kafka-data:

@@ -1,3 +1,43 @@
+# Alpha Radar
+
+Real-time earnings trading on Kafka. SEC filings start an AI research team ([ai-berkshire](https://github.com/xbtlin/ai-berkshire)),
+and a fast rules engine paper-trades only inside its verdict.
+
+> Buffett decides **what**. Livermore decides **when**. The Turtles decide **how much** and **when to quit**.
+
+```
+edgar.py ─▶ filings ─▶ router.py ─▶ skill-requests ─▶ research.py (Claude Code + ai-berkshire) ─▶ research-verdicts ─┐
+news.py ──▶ news                                                                                                    ▼
+producer.py ▶ hn-events                                                    replay.py ─▶ ticks ─▶ trader.py ─▶ orders, fills, pnl
+                                         dashboard.py: every topic ─SSE─▶ cockpit (/) and HN radar (/radar)
+```
+
+## Run
+
+```sh
+SEC_UA="AlphaRadar you@team.dev" docker compose up -d --build
+KAFKA=localhost:9092 BERKSHIRE_DIR=~/ai-berkshire python research.py   # on a machine logged in to Claude Code
+open http://localhost:8080        # pick a recorded day, press "Replay earnings day"
+```
+
+Record another day: `python record.py --list`, then `python record.py <TICKER> <ACCESSION> [--news news.json]`,
+then `python research.py warm <TICKER> <ACCESSION>` to cache its verdict. Tests: `pytest`. Full stack: `python e2e.py data/replays/<file>.jsonl`.
+
+Set up the research machine once (installs ai-berkshire's commands into its own checkout, not your global `~/.claude`):
+
+```sh
+git clone https://github.com/xbtlin/ai-berkshire ~/ai-berkshire
+CLAUDE_COMMANDS_DIR=~/ai-berkshire/.claude/commands ~/ai-berkshire/scripts/install-claude-commands.sh
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+```
+
+On a python.org Python for macOS, HTTPS calls (SEC, yfinance, RSS) fail with `CERTIFICATE_VERIFY_FAILED` until you
+run `export SSL_CERT_FILE=$(.venv/bin/python -m certifi)` (or the installer's "Install Certificates.command").
+
+Paper trading only. Not investment advice.
+
+---
+
 # HN Radar
 
 A real-time Hacker News dashboard. The HN API is hosted on Firebase, and Firebase supports
@@ -11,11 +51,11 @@ hacker-news.firebaseio.com          producer.py              Kafka (KRaft, 1 nod
   /v0/topstories (SSE) ─┘                                                         (replays last 1h, then live)
 ```
 
-## Run
+## HN radar: run on its own
 
 ```sh
-docker compose up -d --build
-open http://localhost:8080
+docker compose up -d --build kafka producer dashboard
+open http://localhost:8080/radar
 ```
 
 Kafka is also exposed on `localhost:9092` for your own consumers.
