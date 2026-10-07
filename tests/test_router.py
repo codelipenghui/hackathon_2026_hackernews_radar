@@ -10,7 +10,7 @@ def test_earnings_8k_triggers_earnings_review():
     req = Router(WATCH).on_filing(F)
     assert req == {"run": "replay-1", "ts": 1758657912000, "request_id": "MU-0000723125-25-000041", "ticker": "MU",
                    "skill": "earnings-review", "args": "MU earnings filed 2025-09-23", "reason": "8-K Item 2.02",
-                   "trigger": {"topic": "filings", "accession": "0000723125-25-000041"}}
+                   "trigger": {"topic": "filings", "accession": "0000723125-25-000041"}, "depth": "both"}
     assert missing_keys("skill-requests", req) == set()
 
 
@@ -58,3 +58,12 @@ def test_research_now_can_be_pressed_again_after_a_minute():
     assert r.on_filing(press)
     assert r.on_filing(press) is None          # double-click
     assert r.on_filing(press)                  # a minute later: e.g. research.py was restarted and missed it
+
+
+def test_research_now_carries_the_chosen_depth_and_each_depth_is_its_own_press():
+    r = Router(WATCH, clock=iter([0, 1, 2]).__next__)
+    press = {**F, "run": "live", "on_demand": True}
+    assert r.on_filing({**press, "depth": "quick"})["depth"] == "quick"
+    assert r.on_filing({**press, "depth": "deep"})["depth"] == "deep"      # not a repeat of the quick press
+    assert r.on_filing({**press, "depth": "quick"}) is None                 # this one is
+    assert Router(WATCH).on_filing(F)["depth"] == "both"                    # a real filing: quick, then deep

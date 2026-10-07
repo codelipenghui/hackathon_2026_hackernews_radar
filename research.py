@@ -26,6 +26,7 @@ CACHE_DELAY_S = float(os.environ.get("CACHE_DELAY_S", 20))
 VERDICTS = {"PASS", "GRAY", "FAIL"}
 MASTERS = ("buffett", "munger", "duan", "lilu")
 FIELDS = ("verdict", "score", "masters", "buy_low", "buy_high", "target", "red_lines", "summary")
+DEPTHS = ("quick", "deep", "both")
 # requests reach Claude (with tools) and name files on disk, so only the router's and triage's exact shapes get through
 SHAPES = {
     "earnings-review": (re.compile(r"[A-Z.]{1,6} earnings filed \d{4}-\d{2}-\d{2}"),
@@ -62,6 +63,8 @@ def check_request(req):
         raise ValueError(f"unexpected request_id: {str(req.get('request_id'))[:80]!r}")
     if req["skill"] == "news-recheck":
         validate_verdict(req.get("prior"))
+    if req.get("depth", "both") not in DEPTHS:
+        raise ValueError(f"depth must be one of {DEPTHS}")
 
 
 def validate_verdict(d):
@@ -166,6 +169,9 @@ class Researcher:
         if req["skill"] == "news-recheck":
             return self._run_quick(req, {**base, "tier": "news"}, out, NEWS_PROMPT.format(ticker=req["ticker"]) + VERDICT_KEYS,
                                    json.dumps(req["prior"]))
+        depth = req.get("depth", "both")
+        if depth == "deep":  # "Deep research" pressed: straight to /earnings-review
+            return schedule_deep(req)
         if req["run"] != LIVE:
             for tier in ("deep", "quick"):
                 if self._cache(req, tier).exists():
@@ -174,7 +180,8 @@ class Researcher:
                         schedule_deep(req)
                     return
         self._run_quick(req, {**base, "tier": "quick"}, out, quick_prompt(req))
-        schedule_deep(req)
+        if depth == "both":
+            schedule_deep(req)
 
     def _emit_cache(self, req, base, out, delay=False):
         if delay:

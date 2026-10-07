@@ -55,7 +55,8 @@
   <span class="live-only">
     <label class="dim">ticker <select id="ticker"></select></label>
     <span class="seg" id="range"><button data-range="1d" class="on">1D</button><button data-range="5d">5D</button><button data-range="1mo">1M</button></span>
-    <button id="rnow" title="Run ai-berkshire now on this company's latest earnings 8-K">🔬 Research now</button>
+    <button class="rnow" data-depth="quick" title="Quick verdict on this company's latest earnings 8-K (~30 s)">⚡ Quick check</button>
+    <button class="rnow" data-depth="deep" title="ai-berkshire /earnings-review on the latest earnings 8-K (10-30 min)">🔬 Deep research</button>
   </span>
   <span class="replay-only">
     <label class="dim">day <select id="file"></select></label>
@@ -215,15 +216,15 @@ $('#go').onclick = async () => {
   await loadRuns(run);
   connect(run);
 };
-$('#rnow').onclick = async () => {
+document.querySelectorAll('.rnow').forEach(btn => btn.onclick = async () => {
   const tk = focus();
-  $('#rnow').disabled = true;
-  const resp = await fetch(`research?ticker=${encodeURIComponent(tk)}`, {method: 'POST'})
-    .finally(() => setTimeout(() => $('#rnow').disabled = false, 3000));
+  btn.disabled = true;
+  const resp = await fetch(`research?ticker=${encodeURIComponent(tk)}&depth=${btn.dataset.depth}`, {method: 'POST'})
+    .finally(() => setTimeout(() => btn.disabled = false, 3000));
   if (!resp.ok) return alert(`Research request failed: ${resp.status} ${resp.statusText}`);
   const r = await resp.json();
   S.requested = {...r, wall: Date.now()};
-};
+});
 fetch('replays').then(r => r.json()).then(fs => $('#file').innerHTML = fs.map(f => `<option>${esc(f)}</option>`).join(''));
 
 // ---- rendering, twice a second ----
@@ -331,7 +332,7 @@ function renderResearch() {
     html('#rsrc', ''); html('#research', `<div>Buffett · Munger · Duan Yongping · Li Lu are reading the filing</div>${running}${failed}`);
   } else if (S.requested) {
     const r = S.requested;
-    html('#rsrc', ''); html('#research', `Requested research on <b>${esc(r.ticker)}</b>: earnings 8-K filed ${esc(et(r.ts))} (${esc(r.accession)}).
+    html('#rsrc', ''); html('#research', `Requested ${esc(TIER[r.depth] || r.depth)} research on <b>${esc(r.ticker)}</b>: earnings 8-K filed ${esc(et(r.ts))} (${esc(r.accession)}).
       <div class="dim">Waiting for the router and research.py to start it. Nothing starting means this filing was already researched in this session.</div>`);
   }
 }

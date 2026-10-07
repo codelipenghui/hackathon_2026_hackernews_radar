@@ -25,8 +25,9 @@ class Router:
         if ticker not in self.watchlist or not (is_8k_earnings or f["form"] in ("10-Q", "10-K")):
             return None
         request_id = f"{ticker}-{f['accession']}"
+        depth = f.get("depth", "both") if f.get("on_demand") else "both"
         if f.get("on_demand"):  # a person asked for this filing: honour it, except an immediate repeat
-            key, now = (f["run"], request_id), self.clock()
+            key, now = (f["run"], request_id, depth), self.clock()
             if now - self.pressed.get(key, -ON_DEMAND_REPEAT_S) < ON_DEMAND_REPEAT_S:
                 return None
             self.pressed[key] = now
@@ -39,7 +40,8 @@ class Router:
         return {"run": f["run"], "ts": f["ts"], "request_id": request_id, "ticker": ticker,
                 "skill": "earnings-review", "args": f"{ticker} earnings filed {filed}",
                 "reason": f"8-K Item {EARNINGS_ITEM}" if is_8k_earnings else f["form"],
-                "trigger": {"topic": "filings", "accession": f["accession"]}}
+                "trigger": {"topic": "filings", "accession": f["accession"]},
+                "depth": depth}  # quick | deep | both (a real filing: a quick verdict now, deep research after)
 
 
 def main():

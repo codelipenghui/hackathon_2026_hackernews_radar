@@ -48,6 +48,7 @@ def test_research_now_uses_the_latest_earnings_8k():
         "acceptanceDateTime": ["2026-09-01T10:00:00.000Z", "2026-08-26T20:21:00.000Z", "2026-05-27T20:20:00.000Z"]}}}
     f = latest_earnings_filing(sub, "NVDA")
     assert (f["run"], f["accession"], f["on_demand"]) == ("live", "0001045810-26-000073", True)
+    assert f["depth"] == "quick" and latest_earnings_filing(sub, "NVDA", depth="deep")["depth"] == "deep"
     assert latest_earnings_filing({**sub, "filings": {"recent": {k: v[:1] for k, v in sub["filings"]["recent"].items()}}}, "NVDA") is None
 
 

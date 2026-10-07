@@ -6,7 +6,7 @@ GET  /events?topics=a,b&run=R   one Kafka consumer per tab over partition 0 of e
                                 reconnects resume exactly; with one topic it is the bare offset, as the radar expects.
 POST /replay?file=F&speed=N     plays data/replays/F into Kafka as a new run and returns {"run": ...}
 GET  /history?ticker=T&range=5d|1mo  older bars for the chart's 5D (15-minute) and 1M (daily) views, from yfinance
-POST /research?ticker=T         "Research now": publishes T's latest earnings 8-K (from SEC) to `filings` as a live,
+POST /research?ticker=T&depth=quick|deep   "Quick check" / "Deep research": publishes T's latest earnings 8-K (from SEC) to `filings` as a live,
                                 on-demand filing, so the router starts ai-berkshire on it like any other filing
 """
 import json
@@ -50,7 +50,7 @@ def stream_start_ms(run, topic, now=None):
     return run_start_ms(run, now)
 
 
-def latest_earnings_filing(sub, ticker):
+def latest_earnings_filing(sub, ticker, depth="quick"):
     """The newest 8-K Item 2.02 in SEC submissions, as a live on-demand filings message (None if there is none)."""
     from record import filing_from_submissions, list_earnings
 
@@ -58,7 +58,7 @@ def latest_earnings_filing(sub, ticker):
     if not found:
         return None
     accession, _ = max(found, key=lambda x: x[1])
-    return {**filing_from_submissions(sub, ticker, accession), "run": LIVE, "on_demand": True}
+    return {**filing_from_submissions(sub, ticker, accession), "run": LIVE, "on_demand": True, "depth": depth}
 
 
 class History:
@@ -131,7 +131,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         q = parse_qs(url.query)
         if url.path == "/research":
-            return self.research_now(q.get("ticker", [""])[0])
+            return self.research_now(q.get("ticker", [""])[0], q.get("depth", ["quick"])[0])
         path = replay_path(q.get("file", [""])[0])
         if url.path != "/replay" or not path:
             return self.send_error(400, "unknown replay file")
@@ -141,21 +141,23 @@ class Handler(BaseHTTPRequestHandler):
                          daemon=True).start()
         self.send_json({"run": run})
 
-    def research_now(self, ticker):
+    def research_now(self, ticker, depth):
         from record import submissions
 
         watchlist = load_watchlist()
         if ticker not in watchlist:
             return self.send_error(400, "ticker not on the watchlist")
+        if depth not in ("quick", "deep"):
+            return self.send_error(400, "depth must be quick or deep")
         try:
-            filing = latest_earnings_filing(submissions(watchlist[ticker]["cik"]), ticker)
+            filing = latest_earnings_filing(submissions(watchlist[ticker]["cik"]), ticker, depth)
         except Exception as e:
             return self.send_error(502, f"SEC lookup failed: {e!r}"[:200])
         if not filing:
             return self.send_error(404, "no earnings 8-K found")
         emit(PRODUCER, "filings", ticker, filing)
         PRODUCER.flush()
-        self.send_json({"ticker": ticker, "accession": filing["accession"], "ts": filing["ts"]})
+        self.send_json({"ticker": ticker, "accession": filing["accession"], "ts": filing["ts"], "depth": depth})
 
     def send_json(self, obj):
         body = json.dumps(obj).encode()

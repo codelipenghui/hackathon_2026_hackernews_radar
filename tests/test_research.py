@@ -235,3 +235,19 @@ def test_the_same_job_is_not_started_twice_while_running(tmp_path):
 def test_messages_carry_wall_clock_time(tmp_path):
     out, _ = run(make(tmp_path, Fake(quick=json.dumps(GOOD))), {**REQ, "run": "live"})
     assert all(isinstance(m["at"], int) and m["at"] > 1_700_000_000_000 for m in out)
+
+
+def test_quick_only_does_not_schedule_deep(tmp_path):
+    out, scheduled = run(make(tmp_path, Fake(quick=json.dumps(GOOD))), {**REQ, "run": "live", "depth": "quick"})
+    assert statuses(out) == [("quick", "started"), ("quick", "done")] and scheduled == []
+
+
+def test_deep_only_skips_the_quick_verdict(tmp_path):
+    fake = Fake()
+    out, scheduled = run(make(tmp_path, fake), {**REQ, "run": "live", "depth": "deep"})
+    assert out == [] and fake.calls == [] and scheduled == [{**REQ, "run": "live", "depth": "deep"}]
+
+
+def test_unknown_depth_is_rejected(tmp_path):
+    out, _ = run(make(tmp_path, Fake()), {**REQ, "run": "live", "depth": "everything"})
+    assert [m["status"] for m in out] == ["failed"]
