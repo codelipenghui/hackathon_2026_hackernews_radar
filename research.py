@@ -9,10 +9,13 @@ The skill's free-text report (often in Chinese) is turned into JSON by a second,
 """
 import json
 import os
+import subprocess
+import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from common import LIVE
+from common import LIVE, consume, emit, load_watchlist, producer
 
 DATA = Path(__file__).with_name("data")
 CACHE_DELAY_S = float(os.environ.get("CACHE_DELAY_S", 20))
@@ -89,3 +92,72 @@ class Researcher:
             return validate_verdict(extract_json(self.extract(report)))
         except ValueError:  # models occasionally wrap or truncate JSON; one retry is cheap
             return validate_verdict(extract_json(self.extract(report)))
+
+
+BERKSHIRE_DIR = Path(os.environ.get("BERKSHIRE_DIR", Path.home() / "ai-berkshire"))
+SKILL_TIMEOUT_S = 600
+MAX_PARALLEL = 2
+TOOLS = "WebSearch,WebFetch,Read,Write,Bash,Task,Agent"
+EXTRACT_PROMPT = """The text on stdin is an investment research report (it may be in Chinese).
+Return ONLY a JSON object, no prose, with exactly these keys:
+  "verdict": "PASS" | "GRAY" | "FAIL"   (Pass/通过/准出 -> PASS, Gray zone/灰色地带 -> GRAY, Fail/不通过/打回 -> FAIL)
+  "score": overall score, a number 0-5
+  "masters": {"buffett": n, "munger": n, "duan": n, "lilu": n}  each 0-5, from the report's per-master view
+  "buy_low", "buy_high": the USD buy range for the aggressive or moderate strategy, or null if none is given
+  "target": the USD price at which the report would take profit or consider the stock fully valued, or null
+  "red_lines": short English strings, conditions that would break the thesis
+  "summary": 2-3 English sentences"""
+
+
+def _claude(args, stdin=None, timeout=SKILL_TIMEOUT_S):
+    p = subprocess.run(["claude", "-p", *args, "--output-format", "json"], input=stdin, cwd=BERKSHIRE_DIR,
+                       capture_output=True, text=True, timeout=timeout, check=True)
+    return json.loads(p.stdout)["result"]
+
+
+def run_skill_cli(skill, args):
+    """Run an ai-berkshire command headless; return the report it saved under reports/, else its final answer."""
+    started = time.time()
+    answer = _claude([f"/{skill} {args}", "--allowedTools", TOOLS])
+    reports = [p for p in (BERKSHIRE_DIR / "reports").glob("*.md") if p.stat().st_mtime >= started]
+    return max(reports, key=lambda p: p.stat().st_mtime).read_text() if reports else answer
+
+
+def extract_cli(report):
+    return _claude([EXTRACT_PROMPT], stdin=report[:150_000], timeout=180)
+
+
+def warm(ticker, accession):
+    """Run research for a recorded demo filing now and save the cache (data/verdicts), before the demo."""
+    from record import filing_from_submissions, submissions
+    from router import Router
+
+    filing = filing_from_submissions(submissions(load_watchlist()[ticker]["cik"]), ticker, accession)
+    req = Router(load_watchlist()).on_filing({**filing, "run": "warm"})
+    if (DATA / "verdicts" / f"{req['request_id']}.json").exists():
+        sys.exit(f"cache already exists for {req['request_id']}; delete it to re-run")
+    Researcher(run_skill_cli, extract_cli).handle({**req, "run": LIVE}, lambda m: print(json.dumps(m, indent=2, ensure_ascii=False)))
+
+
+def main():
+    prod, researcher = producer(), Researcher(run_skill_cli, extract_cli)
+    pool = ThreadPoolExecutor(MAX_PARALLEL)  # at most 2 deep-research runs at a time
+
+    def out(msg):
+        emit(prod, "research-verdicts", msg["ticker"], msg)
+        prod.flush()
+        print(f"{msg['run']} {msg['request_id']}: {msg['status']} {msg.get('verdict', '')} {msg.get('source', '')}")
+
+    def job(req):
+        try:
+            researcher.handle(req, out)
+        except Exception as e:  # never let one request kill the worker silently
+            print(f"research job {req.get('request_id')}: {e!r}")
+
+    print(f"research: ai-berkshire at {BERKSHIRE_DIR}, waiting for skill-requests")
+    for _, req in consume(["skill-requests"]):
+        pool.submit(job, req)
+
+
+if __name__ == "__main__":
+    warm(*sys.argv[2:4]) if sys.argv[1:2] == ["warm"] else main()
