@@ -1,54 +1,120 @@
-"""Serve the radar page and stream the Kafka topic to browsers over Server-Sent Events.
+"""Serve the cockpit and radar pages and stream Kafka topics to browsers over Server-Sent Events.
 
-Each browser connection gets its own Kafka consumer: a fresh tab replays the last hour of
-the topic (so all panels are warm immediately), then follows it live. The SSE event id is the
-Kafka offset, so when EventSource reconnects it resumes exactly where it left off.
+GET  /events?topics=a,b&run=R   one Kafka consumer per tab over partition 0 of each topic, starting at the run's
+                                start (live: the last hour). Messages of other runs are skipped; hn-events always
+                                passes, it is the live backdrop. The SSE id carries the offsets, so EventSource
+                                reconnects resume exactly; with one topic it is the bare offset, as the radar expects.
+POST /replay?file=F&speed=N     plays data/replays/F into Kafka as a new run and returns {"run": ...}
 """
+import json
 import os
-import time
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from kafka import KafkaConsumer, TopicPartition
 
-KAFKA = os.environ.get("KAFKA", "localhost:9092")
-TOPIC = os.environ.get("TOPIC", "hn-events")
+import replay
+from common import KAFKA, LIVE, ensure_topics, new_replay_run, producer, run_start_ms
+
 PORT = int(os.environ.get("PORT", 8080))
-REPLAY_MS = 60 * 60 * 1000
-PAGE = Path(__file__).with_name("index.html")
+HERE = Path(__file__).parent
+REPLAYS = HERE / "data" / "replays"
+PAGES = {"/": ("cockpit.html", "text/html; charset=utf-8"),
+         "/radar": ("index.html", "text/html; charset=utf-8"),
+         "/watchlist.json": ("watchlist.json", "application/json")}
+RUNS = [LIVE]       # live, then replays started from this dashboard, newest first
+PRODUCER = None     # created in main(); only POST /replay writes to Kafka
+
+
+def parse_last_id(value, topics):
+    if not value:
+        return {}
+    if value.startswith("{"):
+        return {t: int(o) for t, o in json.loads(value).items() if t in topics}
+    return {topics[0]: int(value)}
+
+
+def format_id(offsets, topics):
+    return str(offsets[topics[0]]) if len(topics) == 1 else json.dumps(offsets, separators=(",", ":"))
+
+
+def replay_path(name):
+    path = REPLAYS / name
+    return path if name and path.parent == REPLAYS and path.is_file() else None
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path != "/events":
-            body = PAGE.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
+        url = urlsplit(self.path)
+        q = parse_qs(url.query)
+        if url.path == "/events":
+            return self.stream(q.get("topics", ["hn-events"])[0].split(","), q.get("run", [None])[0])
+        if url.path == "/replays":
+            return self.send_json(sorted(p.name for p in REPLAYS.glob("*.jsonl")))
+        if url.path == "/runs":
+            return self.send_json(RUNS)
+        if url.path not in PAGES:
+            return self.send_error(404)
+        name, ctype = PAGES[url.path]
+        body = (HERE / name).read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
+    def do_POST(self):
+        url = urlsplit(self.path)
+        q = parse_qs(url.query)
+        path = replay_path(q.get("file", [""])[0])
+        if url.path != "/replay" or not path:
+            return self.send_error(400, "unknown replay file")
+        run = new_replay_run()
+        RUNS.insert(1, run)
+        threading.Thread(target=replay.play, args=(path, float(q.get("speed", ["300"])[0]), PRODUCER, run),
+                         daemon=True).start()
+        self.send_json({"run": run})
+
+    def send_json(self, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def stream(self, topics, run):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        # ponytail: assumes the single-partition topic Kafka auto-creates, so an offset is a full position;
-        # with more partitions the SSE id would need to carry one offset per partition
-        tp = TopicPartition(TOPIC, 0)
+        ensure_topics(topics)
+        tps = [TopicPartition(t, 0) for t in topics]
         consumer = KafkaConsumer(bootstrap_servers=KAFKA)
         try:
-            consumer.assign([tp])
-            last_id = self.headers.get("Last-Event-ID")  # sent by EventSource on reconnect
-            if last_id:
-                consumer.seek(tp, int(last_id) + 1)
-            else:
-                start = consumer.offsets_for_times({tp: int(time.time() * 1000) - REPLAY_MS})[tp]
-                consumer.seek(tp, start.offset) if start else consumer.seek_to_end(tp)
+            consumer.assign(tps)
+            offsets = parse_last_id(self.headers.get("Last-Event-ID"), topics)  # sent by EventSource on reconnect
+            starts = consumer.offsets_for_times({tp: run_start_ms(run or LIVE) for tp in tps})
+            for tp in tps:
+                if tp.topic in offsets:
+                    consumer.seek(tp, offsets[tp.topic] + 1)
+                elif starts[tp]:
+                    consumer.seek(tp, starts[tp].offset)
+                else:
+                    consumer.seek_to_end(tp)
             while True:
-                records = consumer.poll(timeout_ms=15000).get(tp, [])
-                chunk = "".join(f"id: {r.offset}\ndata: {r.value.decode()}\n\n" for r in records)
-                self.wfile.write((chunk or ": keep-alive\n\n").encode())
+                chunk = []
+                for tp, records in consumer.poll(timeout_ms=15000).items():
+                    for r in records:
+                        offsets[tp.topic] = r.offset
+                        msg = json.loads(r.value)
+                        if run and tp.topic != "hn-events" and msg.get("run", LIVE) != run:
+                            continue
+                        msg["topic"] = tp.topic
+                        chunk.append(f"id: {format_id(offsets, topics)}\ndata: {json.dumps(msg)}\n\n")
+                self.wfile.write(("".join(chunk) or ": keep-alive\n\n").encode())
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass  # browser tab went away
@@ -56,5 +122,12 @@ class Handler(BaseHTTPRequestHandler):
             consumer.close()
 
 
-print(f"HN radar on http://localhost:{PORT}  (kafka {KAFKA}, topic {TOPIC!r})")
-ThreadingHTTPServer(("", PORT), Handler).serve_forever()
+def main():
+    global PRODUCER
+    PRODUCER = producer()
+    print(f"Alpha Radar on http://localhost:{PORT}  (radar at /radar, kafka {KAFKA})")
+    ThreadingHTTPServer(("", PORT), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()
