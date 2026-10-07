@@ -1,35 +1,28 @@
-"""Serve the radar page and stream the Kafka topic to browsers over Server-Sent Events.
+"""Serve the radar page and stream Hacker News events to browsers over Server-Sent Events.
 
-Each browser connection gets its own Kafka consumer: a fresh tab replays the last hour of
-the topic (so all panels are warm immediately), then follows it live. Records are Avro,
-decoded via Schema Registry and forwarded as JSON. The SSE event id is the Kafka offset, so
-when EventSource reconnects it resumes exactly where it left off.
+The events come from a RisingWave materialized view with the HnEvent columns, e.g. a mirror of a
+RisingWave Kafka source on the topic. Each browser tab replays the last hour, then checks for new
+rows every 2 seconds; RisingWave builds the JSON for each row. The SSE event id is the event's ts,
+so when EventSource reconnects it resumes where it left off.
 """
-import json
 import os
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from confluent_kafka import Consumer, TopicPartition
-from confluent_kafka.schema_registry import SchemaRegistryClient
-from confluent_kafka.schema_registry.avro import AvroDeserializer
-from confluent_kafka.serialization import MessageField, SerializationContext, SerializationError
+import psycopg
+from psycopg import sql
 
-import config
-
-TOPIC = config.TOPIC
+RISINGWAVE_URL = os.environ["RISINGWAVE_URL"]
+VIEW = os.environ.get("RISINGWAVE_MV") or "hn-events_mv"
 PORT = int(os.environ.get("PORT", 8080))
 REPLAY_MS = 60 * 60 * 1000
 PAGE = Path(__file__).with_name("index.html")
-deserialize = AvroDeserializer(SchemaRegistryClient(config.registry_conf))
-context = SerializationContext(TOPIC, MessageField.VALUE)
-
-
-def sse(msg):
-    event = deserialize(msg.value(), context)
-    # timestamp-millis fields decode to datetimes; the browser wants epoch millis
-    return f"id: {msg.offset()}\ndata: {json.dumps(event, default=lambda d: round(d.timestamp() * 1000))}\n\n"
+QUERY = sql.SQL("""
+    SELECT (extract(epoch FROM ts) * 1000)::bigint,
+           jsonb_build_object('kind', kind, 'ts', (extract(epoch FROM ts) * 1000)::bigint, 'item', to_jsonb(item),
+                              'user', "user", 'items', to_jsonb(items))::varchar
+    FROM {} WHERE ts > to_timestamp(%s::double precision / 1000) ORDER BY ts""").format(sql.Identifier(VIEW))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -47,41 +40,36 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        # ponytail: assumes the single-partition topic Kafka auto-creates, so an offset is a full position;
-        # with more partitions the SSE id would need to carry one offset per partition
-        consumer = Consumer({
-            **config.kafka_conf,
-            "group.id": "hn-radar-dashboard",
-            "enable.auto.commit": False,
-            "isolation.level": "read_uncommitted",  # no transactions here, and Ursa-engine clusters lack read_committed
-        })
         try:
-            last_id = self.headers.get("Last-Event-ID")  # sent by EventSource on reconnect
-            if last_id:
-                start = int(last_id) + 1
-            else:  # offset -1 (= end of topic) when nothing is that recent
-                since = TopicPartition(TOPIC, 0, int(time.time() * 1000) - REPLAY_MS)
-                start = consumer.offsets_for_times([since], timeout=10)[0].offset
-            consumer.assign([TopicPartition(TOPIC, 0, start)])
-            while True:
-                # poll() returns as soon as a record arrives (consume(n, timeout) would wait for all n), then
-                # drain whatever else is already fetched without waiting
-                first = consumer.poll(15)
-                chunk = ""
-                for msg in [first, *consumer.consume(499, timeout=0)] if first else []:
-                    if msg.error():
-                        continue
-                    try:
-                        chunk += sse(msg)
-                    except SerializationError as e:  # e.g. a stray non-Avro test message: skip, don't wedge every tab
-                        print(f"skipping offset {msg.offset()}: {e}")
-                self.wfile.write((chunk or ": keep-alive\n\n").encode())
-                self.wfile.flush()
+            self.stream(self.headers.get("Last-Event-ID"))  # EventSource sends the last id when it reconnects
         except (BrokenPipeError, ConnectionResetError):
             pass  # browser tab went away
-        finally:
-            consumer.close()
+
+    def stream(self, last_id):
+        self.send(f"event: source\ndata: RisingWave view {VIEW}\n\n")
+        # ponytail: every tab re-queries the view every 2s, and with no index on ts each query scans the whole
+        # view; add `CREATE INDEX ON "hn-events_mv"(ts)` (or one shared poller) when the view or audience grows
+        newest = max(int(last_id or 0), int(time.time() * 1000) - REPLAY_MS)  # never replay more than an hour
+        lower, sent = newest, {}  # sent: events inside the re-read window -> ts
+        with psycopg.connect(RISINGWAVE_URL, autocommit=True, connect_timeout=15) as conn:
+            while True:
+                chunk = ""
+                for ts, event in conn.execute(QUERY, (lower,)):
+                    if event not in sent:
+                        sent[event] = ts
+                        newest = max(newest, ts)
+                        chunk += f"id: {ts}\ndata: {event}\n\n"
+                # rows commit in ~1s batches and can land slightly out of ts order: re-read the last 10s,
+                # skipping what was already sent
+                lower = newest - 10_000
+                sent = {event: ts for event, ts in sent.items() if ts > lower}
+                self.send(chunk)
+                time.sleep(2)
+
+    def send(self, chunk):
+        self.wfile.write((chunk or ": keep-alive\n\n").encode())
+        self.wfile.flush()
 
 
-print(f"HN radar on http://localhost:{PORT}  (kafka {config.KAFKA}, topic {TOPIC!r})")
+print(f"HN radar on http://localhost:{PORT}  (RisingWave view {VIEW})")
 ThreadingHTTPServer(("", PORT), Handler).serve_forever()

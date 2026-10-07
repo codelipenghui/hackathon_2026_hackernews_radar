@@ -1,4 +1,4 @@
-"""Follow the Hacker News Firebase API in real time and publish every change to Kafka.
+"""Follow the Hacker News Firebase API in real time and publish every change to Kafka on StreamNative Cloud.
 
 Firebase REST streaming (Server-Sent Events) pushes a new value for a node whenever it changes;
 HN publishes maxitem / updates / topstories in ~30s ticks. Each change becomes one Avro HnEvent
@@ -10,41 +10,36 @@ HN publishes maxitem / updates / topstories in ~30s ticks. Each change becomes o
   TOP      items   the current front page (top 30)
 """
 import json
+import os
 import threading
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from confluent_kafka import KafkaError, KafkaException, Producer
-from confluent_kafka.admin import AdminClient, NewTopic
+from confluent_kafka import Producer
 from confluent_kafka.schema_registry import Schema, SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 
-import config
-
 API = "https://hacker-news.firebaseio.com/v0"
-TOPIC = config.TOPIC
+KAFKA = os.environ["KAFKA_SERVICE_URL"]
+TOPIC = os.environ.get("TOPIC") or "hn-events"
 SCHEMA = Path(__file__).with_name("hn_event.avsc").read_text()
+TOKEN = os.environ["JWT_TOKEN"].strip()
+USER = os.environ["KAFKA_USERNAME"].strip()  # the service account the token belongs to; the broker rejects any other
 
-registry = SchemaRegistryClient(config.registry_conf)
+# Kafka takes SASL/PLAIN with "token:<jwt>", the registry basic auth with the bare jwt
+registry = SchemaRegistryClient({"url": os.environ["SCHEMA_REGISTRY_URL"], "basic.auth.user.info": f"{USER}:{TOKEN}"})
 schema_id = registry.register_schema(f"{TOPIC}-value", Schema(SCHEMA, "AVRO"))  # fails fast if incompatible
 serialize = AvroSerializer(registry, SCHEMA)
 context = SerializationContext(TOPIC, MessageField.VALUE)
-
-admin = AdminClient(config.kafka_conf)
-try:  # the dashboard reads partition 0 only, so the topic must have exactly one partition
-    admin.create_topics([NewTopic(TOPIC, 1)])[TOPIC].result()
-except KafkaException as e:
-    if e.args[0].code() != KafkaError.TOPIC_ALREADY_EXISTS:
-        print(f"could not create topic {TOPIC!r}: {e.args[0].str()} - create it with 1 partition")
-partitions = len(admin.list_topics(TOPIC, timeout=30).topics[TOPIC].partitions)
-if partitions != 1:
-    print(f"warning: topic {TOPIC!r} has {partitions} partitions, the dashboard only reads partition 0")
-
 producer = Producer({
-    **config.kafka_conf,
+    "bootstrap.servers": KAFKA,
+    "security.protocol": "SASL_SSL",
+    "sasl.mechanism": "PLAIN",
+    "sasl.username": USER,
+    "sasl.password": f"token:{TOKEN}",
     "enable.idempotence": True,
     "compression.type": "gzip",
     "linger.ms": 100,
@@ -124,12 +119,14 @@ def on_updates(updates):
     if updates == last_updates:  # a reconnect replays the current value
         return
     last_updates = updates
-    items = [i for i in pool.map(fetch_item, updates.get("items", [])) if i]
+    # HN occasionally lists the same id twice in one batch; publish it once
+    items = [i for i in pool.map(fetch_item, dict.fromkeys(updates.get("items", []))) if i]
+    profiles = list(dict.fromkeys(updates.get("profiles", [])))
     for item in items:
         emit("UPDATE", item["id"], item=item)
-    for name in updates.get("profiles", []):
+    for name in profiles:
         emit("PROFILE", name, user=name)
-    print(f"updates: {len(items)} items, {len(updates.get('profiles', []))} profiles")
+    print(f"updates: {len(items)} items, {len(profiles)} profiles")
 
 
 def on_topstories(ids):
@@ -140,5 +137,5 @@ def on_topstories(ids):
 
 for path, handler in [("maxitem", on_maxitem), ("updates", on_updates), ("topstories", on_topstories)]:
     threading.Thread(target=follow, args=(path, handler), daemon=True).start()
-print(f"streaming Hacker News -> {config.KAFKA} topic {TOPIC!r} (Avro, schema id {schema_id})")
+print(f"streaming Hacker News -> {KAFKA} topic {TOPIC!r} (Avro, schema id {schema_id})")
 threading.Event().wait()

@@ -5,30 +5,34 @@ A real-time Hacker News dashboard. The HN API is hosted on Firebase, and Firebas
 whenever that node changes. HN updates the nodes in batches about every 30s.
 
 ```
-hacker-news.firebaseio.com        producer.py                   Kafka (KRaft, 1 node)         dashboard.py          browser
-  /v0/maxitem    (SSE) ─┐                                                                                         
-  /v0/updates    (SSE) ─┼─▶ fetch items ─▶ Avro ─▶  topic hn-events (7d retention) ─▶ consumer per tab ─SSE─▶ index.html
-  /v0/topstories (SSE) ─┘                   │                                            │  (replays last 1h, then live)
-                                            └────▶ Schema Registry (hn-events-value) ◀───┘
+HN Firebase API ──SSE──▶ producer.py ──Avro──▶ StreamNative Cloud: Kafka topic hn-events + Schema Registry
+                                                                    │
+                                                                    ▼
+browser ◀──SSE── dashboard.py ◀──SQL── RisingWave: Kafka source "hn-events" ─▶ materialized view "hn-events_mv"
 ```
 
 ## Run
 
+You need:
+
+1. **StreamNative Cloud:** a Kafka cluster with the topic `hn-events`. A service account needs produce permission on the topic, plus the `schema-writer` role. The producer registers the schema on start.
+2. **RisingWave:** a Kafka source on `hn-events` that decodes the Avro through the schema registry. The dashboard reads this view of it:
+   ```sql
+   CREATE MATERIALIZED VIEW "hn-events_mv" AS SELECT * FROM "hn-events";  -- "hn-events": the Kafka source
+   ```
+
+Then:
+
 ```sh
+cp .env.example .env    # fill it in; .env is git-ignored
 docker compose up -d --build
 open http://localhost:8080
 ```
 
-| Service         | From your machine        | From other containers         |
-|-----------------|--------------------------|-------------------------------|
-| Dashboard       | `http://localhost:8080`  | `http://dashboard:8080`       |
-| Kafka           | `localhost:9092`         | `kafka:19092`                 |
-| Schema Registry | `http://localhost:8081`  | `http://schema-registry:8081` |
-
 ## Topic `hn-events`
 
 - **Key:** a plain UTF-8 string: the item id, the username, or `top`.
-- **Value:** Avro in the Confluent wire format. The schema is [`hn_event.avsc`](hn_event.avsc), registered as subject `hn-events-value` with the registry's default BACKWARD compatibility.
+- **Value:** Avro in the Confluent wire format. The schema is [`hn_event.avsc`](hn_event.avsc), registered as subject `hn-events-value` with BACKWARD compatibility.
 
 Every record is an `HnEvent` with `kind`, `ts` (`timestamp-millis`), and one field that depends on the kind:
 
@@ -41,44 +45,23 @@ Every record is an `HnEvent` with `kind`, `ts` (`timestamp-millis`), and one fie
 
 `Item` mirrors the [HN item](https://github.com/HackerNews/API#items) fields, without `kids`.
 
-```sh
-curl localhost:8081/subjects/hn-events-value/versions/latest   # the registered schema
-docker compose exec schema-registry kafka-avro-console-consumer --bootstrap-server kafka:19092 \
-  --topic hn-events --from-beginning --max-messages 5 --property schema.registry.url=http://localhost:8081
-```
-
 ### Connecting other services
 
-Use the Confluent Avro deserializer and point it at the registry. Clients in other languages work the same way through their Confluent Avro deserializer. For Kafka Connect:
+- **Kafka:** SASL/PLAIN over TLS. The username must be the service account the API key belongs to, and the password is `token:<JWT>`.
+- **Schema Registry:** basic auth with the bare JWT as the password. The username is ignored.
+
+For example, Kafka Connect's converter settings:
 
 ```properties
 key.converter=org.apache.kafka.connect.storage.StringConverter
 value.converter=io.confluent.connect.avro.AvroConverter
-value.converter.schema.registry.url=http://schema-registry:8081
+value.converter.schema.registry.url=<SCHEMA_REGISTRY_URL>
+value.converter.basic.auth.credentials.source=USER_INFO
+value.converter.basic.auth.user.info=<service account>:<JWT>
 ```
 
 Downstream jobs can route on `kind`. To change the schema, edit `hn_event.avsc` and restart the
 producer. It registers the new version on start and refuses to run if the change isn't backward compatible.
-
-## Publish to StreamNative Cloud
-
-The producer and the dashboard can use a StreamNative Cloud cluster, through its Kafka protocol
-and Kafka Schema Registry, instead of the local containers:
-
-```sh
-cp .env.example .env    # fill it in; .env is git-ignored
-docker compose up -d --build
-```
-
-- **Kafka cluster:** set `KAFKA_USERNAME` to the service account the API key belongs to, the `userName` in the console's client example. The broker rejects any other username.
-- **Pulsar cluster:** leave `KAFKA_USERNAME` empty, so it defaults to `public/default`, and append `/kafka` to the Schema Registry URL.
-- The service account needs produce and consume permission on the topic, plus the `schema-writer` role.
-- On start the producer registers the schema and creates `hn-events` with one partition. If the account can't create topics, create `hn-events` yourself with one partition.
-- On a Pulsar cluster, give `public/default` a retention policy, e.g. 7 days. Otherwise Pulsar can drop messages that no subscription holds, and the dashboard's one-hour replay comes back empty.
-- Other services connect the same way. Kafka uses SASL/PLAIN over TLS with the username above and password `token:<JWT>`. The registry uses basic auth with the bare JWT as password. See [`config.py`](config.py).
-
-To go back to local, move `.env` aside and run `docker compose up -d` again. The local Kafka and
-Schema Registry containers keep running in either mode.
 
 ## Dashboard
 
@@ -88,11 +71,12 @@ Schema Registry containers keep running in either mode.
 - **Activity**: events per minute over the last hour, split by type.
 - **Live feed**: new stories and comments.
 
-A new tab rebuilds all of this from the last hour of the topic. The dashboard decodes the Avro
-via the registry and sends JSON to the browser. Each SSE event id is the Kafka offset, so when the
-browser reconnects it picks up exactly where it left off.
+A new tab rebuilds all of this from the last hour of the view, then checks for new rows every
+2 seconds. RisingWave builds the JSON for each row. Each SSE event id is the event's timestamp, so
+when the browser reconnects it picks up where it left off.
 
 ## Known limits
 
-- The dashboard reads partition 0 only. The producer creates the topic with one partition, and warns if an existing topic has more.
 - If the producer restarts, items created while it was down are not backfilled.
+- Every tab re-queries the view every 2 seconds, and without an index each query scans the whole view,
+  which keeps every event. Add `CREATE INDEX ON "hn-events_mv"(ts)` once it gets large.

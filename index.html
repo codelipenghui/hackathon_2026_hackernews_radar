@@ -83,7 +83,7 @@
 <body>
 <header>
   <div class="logo"><b>Y</b>HN RADAR</div>
-  <span class="dim">Hacker News firebase stream → Kafka → you</span>
+  <span class="dim">Hacker News firebase stream → Kafka → RisingWave → you</span>
   <div id="status"><i></i><b id="state">CONNECTING</b> · <span id="meta"></span></div>
 </header>
 
@@ -139,12 +139,12 @@ const bearing = id => (Math.imul(id, 2654435761) >>> 0) / 2 ** 32 * TAU;  // sta
 const jitter = id => (Math.imul(id, 40503) >>> 0) % 997 / 997;
 const ringR = i => 0.1 + 0.78 * i / 29;  // front-page rank (0..29) -> radius as a fraction of R
 
-// ---- state, rebuilt from the Kafka topic (the server replays the last hour on connect) ----
+// ---- state, rebuilt from the event stream (the server replays the last hour on connect) ----
 let events = [];                                     // [ts, 'story' | 'comment' | 'update' | 'profile']
 const stories = new Map();                           // id -> {item, hist: [[ts, score, comments]], changed}
 let front = [], frontIds = new Set(), frontHist = []; // current top 30 + earlier snapshots for rank movement
 let feed = [], contacts = [], pings = [], heat = new Map();
-let offset = '–', lastTs = 0;
+let source = '…', lastTs = 0;
 
 function track(it, t) {
   let s = stories.get(it.id);
@@ -179,11 +179,12 @@ function ingest(ev) {
   }
 }
 
-const es = new EventSource('events');  // the SSE id is the Kafka offset, so reconnects resume exactly
+const es = new EventSource('events');  // the server resumes from the last event id on reconnect
 const live = ok => { $('#status').className = ok ? 'live' : ''; $('#state').textContent = ok ? 'LIVE' : 'RECONNECTING'; };
 es.onopen = () => live(true);
 es.onerror = () => live(false);
-es.onmessage = e => { offset = e.lastEventId; ingest(JSON.parse(e.data)); };
+es.onmessage = e => ingest(JSON.parse(e.data));
+es.addEventListener('source', e => source = e.data);  // shown in the header
 
 // ---- panels, re-rendered once a second (DOM only touched when the markup changed) ----
 const shown = {};
@@ -205,7 +206,7 @@ function render() {
   for (const [t, type] of events) { n[type]++; if (t > now - 5 * 60e3) last5++; }
   for (const k in n) $('#k-' + k).textContent = n[k].toLocaleString();
   $('#k-rate').textContent = Math.round(last5 / 5).toLocaleString();
-  $('#meta').innerHTML = `topic <b>hn-events</b> · offset <b>${offset}</b> · last event <b>${lastTs ? ago(now - lastTs) : '–'}</b> ago`;
+  $('#meta').innerHTML = `<b>${esc(source)}</b> · last event <b>${lastTs ? ago(now - lastTs) : '–'}</b> ago`;
 
   // heat = points gained since ~30 min ago (or since first seen, for younger stories)
   const rising = [];

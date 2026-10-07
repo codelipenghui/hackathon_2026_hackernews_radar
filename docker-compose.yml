@@ -1,70 +1,22 @@
-# Producer + dashboard use the local Kafka/Schema Registry below, or StreamNative Cloud when
-# .env sets these (copy .env.example to .env; it is git-ignored).
-x-app-env: &app-env
-  KAFKA_SERVICE_URL: ${KAFKA_SERVICE_URL:-kafka:19092}
-  SCHEMA_REGISTRY_URL: ${SCHEMA_REGISTRY_URL:-http://schema-registry:8081}
-  JWT_TOKEN: ${JWT_TOKEN:-}
-  KAFKA_USERNAME: ${KAFKA_USERNAME:-}
-
+# producer:  Hacker News -> Avro -> Kafka topic hn-events on StreamNative Cloud
+# dashboard: RisingWave materialized view -> SSE -> http://localhost:8080
+# Settings come from .env (copy .env.example; .env is git-ignored). Each service only gets its own.
 services:
-  kafka:
-    image: apache/kafka:4.1.0
-    restart: unless-stopped
-    ports: ["9092:9092"]
-    environment:
-      # single-node KRaft (broker + controller in one process, no ZooKeeper)
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      # INTERNAL for other containers, EXTERNAL for your host (localhost:9092)
-      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,EXTERNAL://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_LOG_DIRS: /var/lib/kafka/data
-      KAFKA_LOG_RETENTION_HOURS: 168
-    volumes: [kafka-data:/var/lib/kafka/data]
-    healthcheck:
-      test: /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
-      start_period: 60s
-      start_interval: 2s  # poll fast while booting, then only every minute (each check spawns a JVM)
-      interval: 60s
-      timeout: 20s
-      retries: 3
-
-  schema-registry:  # Confluent Schema Registry, schemas stored in the _schemas topic
-    image: confluentinc/cp-schema-registry:8.2.4
-    restart: unless-stopped
-    ports: ["8081:8081"]
-    environment:
-      SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:19092
-    depends_on: { kafka: { condition: service_healthy } }
-    healthcheck:
-      test: curl -fs localhost:8081/subjects
-      start_period: 60s
-      start_interval: 2s
-      interval: 30s
-
-  producer:  # HN firebase SSE -> Avro -> kafka topic hn-events
+  producer:
     build: .
     command: python producer.py
     restart: unless-stopped
-    environment: *app-env
-    depends_on: { schema-registry: { condition: service_healthy } }
+    environment:
+      KAFKA_SERVICE_URL: ${KAFKA_SERVICE_URL:?set it in .env}
+      SCHEMA_REGISTRY_URL: ${SCHEMA_REGISTRY_URL:?set it in .env}
+      JWT_TOKEN: ${JWT_TOKEN:?set it in .env}
+      KAFKA_USERNAME: ${KAFKA_USERNAME:?set it in .env}
 
-  dashboard:  # kafka -> SSE -> http://localhost:8080
+  dashboard:
     build: .
     command: python dashboard.py
     restart: unless-stopped
     ports: ["8080:8080"]
-    environment: *app-env
-    depends_on: { schema-registry: { condition: service_healthy } }
-
-volumes:
-  kafka-data:
+    environment:
+      RISINGWAVE_URL: ${RISINGWAVE_URL:?set it in .env}
+      RISINGWAVE_MV: ${RISINGWAVE_MV:-}
