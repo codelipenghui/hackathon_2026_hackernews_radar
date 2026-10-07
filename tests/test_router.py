@@ -1,0 +1,38 @@
+from common import missing_keys
+from router import Router
+
+WATCH = {"MU": {"cik": "0000723125", "names": ["Micron"]}}
+F = {"run": "replay-1", "ts": 1, "ticker": "MU", "cik": "0000723125", "form": "8-K",
+     "items": ["2.02", "9.01"], "accession": "acc-1", "url": "u", "title": "t"}
+
+
+def test_earnings_8k_triggers_earnings_review():
+    req = Router(WATCH).on_filing(F)
+    assert req == {"run": "replay-1", "ts": 1, "request_id": "MU-acc-1", "ticker": "MU",
+                   "skill": "earnings-review", "args": "MU latest", "reason": "8-K Item 2.02",
+                   "trigger": {"topic": "filings", "accession": "acc-1"}}
+    assert missing_keys("skill-requests", req) == set()
+
+
+def test_8k_without_item_202_is_ignored():
+    assert Router(WATCH).on_filing({**F, "items": ["8.01"]}) is None
+
+
+def test_10q_triggers():
+    assert Router(WATCH).on_filing({**F, "form": "10-Q", "items": []})["reason"] == "10-Q"
+
+
+def test_ticker_not_on_watchlist_is_ignored():
+    assert Router(WATCH).on_filing({**F, "ticker": "NVDA"}) is None
+
+
+def test_one_request_per_ticker_per_run():
+    r = Router(WATCH)
+    assert r.on_filing(F)
+    assert r.on_filing({**F, "form": "10-Q", "items": [], "accession": "acc-2"}) is None
+
+
+def test_replaying_the_same_filing_in_a_new_run_triggers_again():
+    r = Router(WATCH)
+    r.on_filing(F)
+    assert r.on_filing({**F, "run": "replay-2"})["request_id"] == "MU-acc-1"
