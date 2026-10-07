@@ -116,15 +116,18 @@ let S, es, RUN = 'live', RANGE = '1d', hist = {key: '', ticks: [], at: 0};
 const focus = () => $('#ticker').value;                 // the ticker on the chart
 const ticksOf = tk => S.ticksBy.get(tk) || [];
 function reset() {
-  S = {filing: null, ticksBy: new Map(), running: new Map(), verdict: null, failed: null, requested: null, orders: new Map(),
+  S = {filing: null, filings: new Map(), ticksBy: new Map(), research: new Map(), orders: new Map(),
        fills: [], pnl: null, news: [], newsSeen: new Set(), events: []};
 }
+// research state per ticker: the panel, band and pivot always describe the selected company
+const researchOf = tk => S.research.get(tk) || S.research.set(tk, {verdict: null, running: new Map(), failed: null, requested: null}).get(tk);
 
 function ingest(m) {
   switch (m.topic) {
     case 'filings':
       S.filing = m;
-      $('#ticker').value = m.ticker;  // follow the company that just filed
+      S.filings.set(m.ticker, m);
+      if (RUN !== 'live') $('#ticker').value = m.ticker;  // a replay follows its company; live keeps your choice
       S.events.push([m.ts, '📄', `${m.ticker} filed ${m.form}${m.items.length ? ' · items ' + m.items.join(', ') : ''}`, m.url]);
       break;
     case 'ticks':
@@ -148,10 +151,11 @@ function ingest(m) {
     case 'research-verdicts': {
       m.tier = m.tier || 'deep';  // verdicts from before tiers existed were all /earnings-review
       const tier = TIER[m.tier] || m.tier;
-      if (m.status === 'started') { S.running.set(m.tier, m); S.events.push([m.ts, '', `${tier} research started`]); break; }
-      S.running.delete(m.tier);
-      if (m.status === 'done') { S.verdict = m; S.failed = null; S.events.push([m.ts, '⚖️', `${tier} verdict ${m.verdict} ${m.score}/5 · buy ${usd(m.buy_low)}–${usd(m.buy_high)} · ${m.source}`]); }
-      else { S.failed = m; S.events.push([m.ts, '⚠️', `${tier} research failed: ${m.error || ''}`]); }
+      const r = researchOf(m.ticker);
+      if (m.status === 'started') { r.running.set(m.tier, m); S.events.push([m.ts, '', `${m.ticker} ${tier} research started`]); break; }
+      r.running.delete(m.tier);
+      if (m.status === 'done') { r.verdict = m; r.failed = null; S.events.push([m.ts, '⚖️', `${m.ticker} ${tier} verdict ${m.verdict} ${m.score}/5 · buy ${usd(m.buy_low)}–${usd(m.buy_high)} · ${m.source}`]); }
+      else { r.failed = m; S.events.push([m.ts, '⚠️', `${m.ticker} ${tier} research failed: ${m.error || ''}`]); }
       break;
     }
     case 'news-triage':
@@ -224,7 +228,7 @@ document.querySelectorAll('.rnow').forEach(btn => btn.onclick = async () => {
     .finally(() => setTimeout(() => btn.disabled = false, 3000));
   if (!resp.ok) return alert(`Research request failed: ${resp.status} ${resp.statusText}`);
   const r = await resp.json();
-  S.requested = {...r, wall: Date.now()};
+  researchOf(r.ticker).requested = {...r, wall: Date.now()};
 });
 fetch('replays').then(r => r.json()).then(fs => $('#file').innerHTML = fs.map(f => `<option>${esc(f)}</option>`).join(''));
 
@@ -257,9 +261,9 @@ function drawChart() {
       : `Waiting for live ${tk} prices (prices.py publishes 5-minute bars)…`, 12, 20);
     return;
   }
-  const v = S.verdict?.status === 'done' && S.verdict.ticker === tk ? S.verdict : null;
+  const v = researchOf(tk).verdict, fl = S.filings.get(tk);
   const pos = S.pnl?.positions?.[T[0].ticker];
-  const piv = daily && S.filing?.ticker === tk ? pivotOf(T, S.filing.ts) : null;
+  const piv = daily && fl ? pivotOf(T, fl.ts) : null;
   const levels = [...T.map(t => t.price), v?.buy_low, v?.buy_high, pos?.stop, piv].filter(x => x != null);
   let lo = Math.min(...levels), hi = Math.max(...levels);
   const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
@@ -281,8 +285,8 @@ function drawChart() {
   };
   if (v?.buy_low != null) { g.fillStyle = '#3ddc8422'; g.fillRect(L, y(v.buy_high), R - L, y(v.buy_low) - y(v.buy_high)); }
   T.forEach((t, i) => { if (t.session !== 'regular') { g.fillStyle = '#ffffff06'; g.fillRect(x(i) - (R - L) / T.length / 2, TOP, (R - L) / T.length, B - TOP); } });
-  if (S.filing?.ticker === tk && S.filing.ts >= T[0].ts) {  // a live on-demand filing may predate the chart
-    const i = T.findIndex(t => t.ts >= S.filing.ts);
+  if (fl && fl.ts >= T[0].ts) {  // a live on-demand filing may predate the chart
+    const i = T.findIndex(t => t.ts >= fl.ts);
     if (i >= 0) { g.strokeStyle = '#4da3ff'; g.beginPath(); g.moveTo(x(i), TOP); g.lineTo(x(i), B); g.stroke(); g.fillStyle = '#4da3ff'; g.fillText('8-K', x(i) + 3, TOP + 10); }
   }
   if (piv != null) hline(piv, '#ffd166', [4, 4], `pivot ${piv.toFixed(2)}`);
@@ -313,12 +317,12 @@ function drawChart() {
 }
 
 function renderResearch() {
-  const v = S.verdict;
+  const tk = focus(), st = researchOf(tk), v = st.verdict;
   const clock = w => { const s = Math.round((Date.now() - w) / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
   // `at` is when research.py started it; anything past its time limit was lost (e.g. research.py restarted)
-  const running = [...S.running.values()].filter(r => r.at && Date.now() - r.at < (LIMIT_MS[r.tier] || 6e5)).map(r => `<div class="dim" style="margin-top:6px">${esc(TIER[r.tier] || r.tier)} research on ${esc(r.ticker)} running… <span class="num">${clock(r.at)}</span>${
+  const running = [...st.running.values()].filter(r => r.at && Date.now() - r.at < (LIMIT_MS[r.tier] || 6e5)).map(r => `<div class="dim" style="margin-top:6px">${esc(TIER[r.tier] || r.tier)} research on ${esc(r.ticker)} running… <span class="num">${clock(r.at)}</span>${
     r.tier === 'deep' ? ' · ai-berkshire /earnings-review, 10–30 min; replaces the verdict when done' : ''}</div>`).join('');
-  const failed = S.failed ? `<div class="down" style="margin-top:6px">${esc(TIER[S.failed.tier] || S.failed.tier)} research failed <span class="dim">${esc(S.failed.error)}</span></div>` : '';
+  const failed = st.failed ? `<div class="down" style="margin-top:6px">${esc(TIER[st.failed.tier] || st.failed.tier)} research failed <span class="dim">${esc(st.failed.error)}</span></div>` : '';
   if (v) {
     const m = v.masters;
     html('#rsrc', `${esc(TIER[v.tier] || v.tier)} · ${esc(v.source)} · ${esc(v.duration_s)}s`);
@@ -331,10 +335,14 @@ function renderResearch() {
       ${v.report_path ? `<div class="dim" style="margin-top:6px">${esc(v.report_path)}</div>` : ''}${running}${failed}`);
   } else if (running || failed) {
     html('#rsrc', ''); html('#research', `<div>Buffett · Munger · Duan Yongping · Li Lu are reading the filing</div>${running}${failed}`);
-  } else if (S.requested) {
-    const r = S.requested;
+  } else if (st.requested) {
+    const r = st.requested;
     html('#rsrc', ''); html('#research', `Requested ${esc(TIER[r.depth] || r.depth)} research on <b>${esc(r.ticker)}</b>: earnings 8-K filed ${esc(et(r.ts))} (${esc(r.accession)}).
-      <div class="dim">Waiting for the router and research.py to start it. Nothing starting means this filing was already researched in this session.</div>`);
+      <div class="dim">Waiting for the router and research.py to start it.</div>`);
+  } else {
+    html('#rsrc', '');
+    html('#research', RUN === 'live' ? `No research on <b>${esc(tk)}</b> yet. Press ⚡ Quick check (~30 s) or 🔬 Deep research (10–30 min).`
+                                     : 'Waiting for an earnings filing…');
   }
 }
 
