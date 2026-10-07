@@ -161,3 +161,9 @@ def test_repeated_or_out_of_order_ticks_are_ignored():
     assert trader.on_tick(tick(5, 150)) == []          # same bar again (a restarted price feed)
     assert trader.on_tick(tick(2, 999)) == []          # older bar
     assert len(trader.books["replay-1"].bars["MU"]) == 6
+
+
+def test_gray_news_verdict_holds_the_position_and_blocks_new_entries():
+    trader = bought()
+    assert trader.on_verdict({**V, "verdict": "GRAY", "score": 3.0}) == []
+    assert trader.books["replay-1"].positions["MU"]["qty"] == 125

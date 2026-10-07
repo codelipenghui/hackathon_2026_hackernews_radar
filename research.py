@@ -1,11 +1,13 @@
-"""Run ai-berkshire research for each skill request and publish a structured verdict to `research-verdicts`.
+"""Research for each skill request, published as verdicts on `research-verdicts` in two speeds.
 
-Runs on a team laptop, not in Docker: it shells out to the Claude Code CLI, which needs your login, with the
-ai-berkshire commands installed (its scripts/install-claude-commands.sh). A deep-research run takes minutes, so:
-  - replays with a cached verdict (data/verdicts/<request_id>.json) wait CACHE_DELAY_S so the "researching..."
-    card is visible, then emit the cache; the demo never depends on a live run
-  - a live run that times out or fails falls back to the cache when there is one
-The skill's free-text report (often in Chinese) is turned into JSON by a second, short Claude call.
+Runs on a team laptop, not in Docker: it shells out to the Claude Code CLI (your login), with ai-berkshire's commands
+installed in its checkout. Each verdict carries a `tier`:
+  quick  one Claude session (Sonnet, web search only, a few minutes) scoring the filing like the four masters;
+         tradeable right away
+  deep   ai-berkshire /earnings-review in the background (10-30+ minutes); replaces the quick verdict when done
+  news   a quick re-check after material news (see triage.py), updating the previous verdict
+Replays use cached verdicts (data/verdicts/) so the demo never waits on a live run; a live run that fails falls back
+to the cache when there is one. Deep reports (often in Chinese) become JSON through a second, short Claude call.
 """
 import json
 import os
@@ -23,10 +25,12 @@ CACHE_DELAY_S = float(os.environ.get("CACHE_DELAY_S", 20))
 VERDICTS = {"PASS", "GRAY", "FAIL"}
 MASTERS = ("buffett", "munger", "duan", "lilu")
 FIELDS = ("verdict", "score", "masters", "buy_low", "buy_high", "target", "red_lines", "summary")
-# requests reach Claude (with Bash allowed) and name files on disk, so only the router's exact shape gets through
-SKILLS = {"earnings-review"}
-ARGS = re.compile(r"[A-Z.]{1,6} earnings filed \d{4}-\d{2}-\d{2}")
-REQUEST_ID = re.compile(r"[A-Z.]{1,6}-\d{10}-\d{2}-\d{6}")
+# requests reach Claude (with tools) and name files on disk, so only the router's and triage's exact shapes get through
+SHAPES = {
+    "earnings-review": (re.compile(r"[A-Z.]{1,6} earnings filed \d{4}-\d{2}-\d{2}"),
+                        re.compile(r"[A-Z.]{1,6}-\d{10}-\d{2}-\d{6}")),
+    "news-recheck": (re.compile(r"[A-Z.]{1,6} 3d"), re.compile(r"[A-Z.]{1,6}-news-[0-9a-f]{8}")),
+}
 
 
 def _num(x):
@@ -48,12 +52,15 @@ def extract_json(text):
 
 
 def check_request(req):
-    if req.get("skill") not in SKILLS:
+    if req.get("skill") not in SHAPES:
         raise ValueError(f"skill not allowed: {req.get('skill')!r}")
-    if not ARGS.fullmatch(str(req.get("args", ""))):
+    args, request_id = SHAPES[req["skill"]]
+    if not args.fullmatch(str(req.get("args", ""))):
         raise ValueError(f"unexpected args: {str(req.get('args'))[:80]!r}")
-    if not REQUEST_ID.fullmatch(str(req.get("request_id", ""))):
+    if not request_id.fullmatch(str(req.get("request_id", ""))):
         raise ValueError(f"unexpected request_id: {str(req.get('request_id'))[:80]!r}")
+    if req["skill"] == "news-recheck":
+        validate_verdict(req.get("prior"))
 
 
 def validate_verdict(d):
@@ -78,13 +85,40 @@ def validate_verdict(d):
     return {k: d.get(k) for k in FIELDS}
 
 
+VERDICT_KEYS = """Return ONLY a JSON object, no prose, with exactly these keys:
+  "verdict": "PASS" | "GRAY" | "FAIL"
+  "score": overall score, a number 0-5
+  "masters": {"buffett": n, "munger": n, "duan": n, "lilu": n}  each 0-5
+  "buy_low", "buy_high": a USD buy range, or null if you would not buy
+  "target": the USD price at which you would take profit, or null
+  "red_lines": short English strings, conditions that would break the thesis
+  "summary": 2-3 English sentences"""
+
+QUICK_PROMPT = """You are AI Berkshire's quick-verdict analyst. {ticker} published its earnings (SEC 8-K, accession
+{accession}) on {date}. In a few minutes and at most 6 web searches, judge the results and the business as
+Buffett (financials, cash, valuation), Munger (inversion: how could this fail?), Duan Yongping (business model,
+culture) and Li Lu (10-year certainty) would. Price the buy range from the share price around {date}.
+"""
+
+NEWS_PROMPT = """You are AI Berkshire's news analyst for {ticker}. Stdin holds the current investment verdict as JSON.
+Search the most important news about {ticker} from the last 3 days (at most 5 web searches) and decide whether it
+changes the thesis. Keep every value the news does not change; say in the summary what changed and why.
+"""
+
+
+def quick_prompt(req):
+    ticker, _, _, date = req["args"].split()
+    return QUICK_PROMPT.format(ticker=ticker, date=date, accession=req["request_id"].split("-", 1)[1]) + VERDICT_KEYS
+
+
 class Researcher:
-    def __init__(self, run_skill, extract, data_dir=DATA, cache_delay_s=CACHE_DELAY_S, sleep=time.sleep, clock=time.time):
-        self.run_skill, self.extract = run_skill, extract
+    def __init__(self, quick, deep, extract, data_dir=DATA, cache_delay_s=CACHE_DELAY_S, sleep=time.sleep,
+                 clock=time.time):
+        self.quick, self.deep, self.extract = quick, deep, extract
         self.data_dir, self.cache_delay_s, self.sleep, self.clock = Path(data_dir), cache_delay_s, sleep, clock
 
-    def cache_file(self, req):
-        return self.data_dir / "verdicts" / f"{req['request_id']}.json"
+    def _cache(self, req, tier):
+        return self.data_dir / "verdicts" / f"{req['request_id']}{'.quick' if tier == 'quick' else ''}.json"
 
     def is_cached(self, req):
         """Replays with a cached verdict are served at once, never queued behind a live run."""
@@ -92,109 +126,162 @@ class Researcher:
             check_request(req)
         except ValueError:
             return False
-        return req["run"] != LIVE and self.cache_file(req).exists()
+        return req["run"] != LIVE and any(self._cache(req, t).exists() for t in ("deep", "quick"))
 
-    def handle(self, req, out):
+    def handle(self, req, out, schedule_deep):
+        """Answer a request with a quick (or news) verdict now; hand earnings to schedule_deep for the deep tier."""
         base = {k: req.get(k) for k in ("run", "ts", "request_id", "ticker", "skill")}
         try:
             check_request(req)
         except ValueError as e:
             print(f"research: rejected request: {e}")
-            return out({**base, "status": "failed", "error": f"rejected: {e}"})
-        out({**base, "status": "started"})
-        cache = self.cache_file(req)
-        if req["run"] != LIVE and cache.exists():
+            return out({**base, "tier": "quick", "status": "failed", "error": f"rejected: {e}"})
+        if req["skill"] == "news-recheck":
+            return self._run_quick(req, {**base, "tier": "news"}, out, NEWS_PROMPT.format(ticker=req["ticker"]) + VERDICT_KEYS,
+                                   json.dumps(req["prior"]))
+        if req["run"] != LIVE:
+            for tier in ("deep", "quick"):
+                if self._cache(req, tier).exists():
+                    self._emit_cache(req, {**base, "tier": tier}, out, delay=True)
+                    if tier == "quick":
+                        schedule_deep(req)
+                    return
+        self._run_quick(req, {**base, "tier": "quick"}, out, quick_prompt(req))
+        schedule_deep(req)
+
+    def _emit_cache(self, req, base, out, delay=False):
+        if delay:
+            out({**base, "status": "started"})
             self.sleep(self.cache_delay_s)
-            return out({**base, **json.loads(cache.read_text()), "status": "done", "source": "cache"})
+        out({**base, **json.loads(self._cache(req, base["tier"]).read_text()), "status": "done", "source": "cache"})
+
+    def _run_quick(self, req, base, out, prompt, stdin=None):
+        out({**base, "status": "started"})
+        if req["run"] != LIVE and self._cache(req, base["tier"]).exists():
+            self.sleep(self.cache_delay_s)
+            return self._emit_cache(req, base, out)
+        started = self.clock()
+        try:
+            verdict = self._json(lambda: self.quick(prompt, stdin))
+        except Exception as e:
+            print(f"research {req['request_id']} {base['tier']}: {e!r}")
+            return out({**base, "status": "failed", "error": repr(e)[:300]})
+        self._save(req, base, out, {**verdict, "report_path": None, "duration_s": round(self.clock() - started)})
+
+    def deep_job(self, req, out):
+        """ai-berkshire /earnings-review; its verdict replaces the quick one."""
+        base = {k: req.get(k) for k in ("run", "ts", "request_id", "ticker", "skill")} | {"tier": "deep"}
+        out({**base, "status": "started"})
         started = self.clock()
         report_path = self.data_dir / "reports" / f"{req['request_id']}.md"
         try:
-            report = self.run_skill(req["skill"], req["args"])
+            report = self.deep(req["skill"], req["args"])
             report_path.parent.mkdir(parents=True, exist_ok=True)
-            report_path.write_text(report)  # keep the minutes-long research even if extraction fails
-            verdict = self._verdict(report)
+            report_path.write_text(report)  # keep the long research even if extraction fails
+            verdict = self._json(lambda: self.extract(report))
         except Exception as e:
-            print(f"research {req['request_id']}: {e!r}")
-            if cache.exists():
-                return out({**base, **json.loads(cache.read_text()), "status": "done", "source": "cache"})
+            print(f"research {req['request_id']} deep: {e!r}")
+            if self._cache(req, "deep").exists():
+                return self._emit_cache(req, base, out)
             return out({**base, "status": "failed", "error": repr(e)[:300]})
-        saved = {**verdict, "report_path": str(report_path.relative_to(self.data_dir.parent)),
-                 "duration_s": round(self.clock() - started)}
+        self._save(req, base, out, {**verdict, "report_path": str(report_path.relative_to(self.data_dir.parent)),
+                                    "duration_s": round(self.clock() - started)})
+
+    def _save(self, req, base, out, saved):
+        cache = self._cache(req, base["tier"])
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps(saved, indent=2, ensure_ascii=False))
         out({**base, **saved, "status": "done", "source": "live"})
 
-    def _verdict(self, report):
+    @staticmethod
+    def _json(call):
         try:
-            return validate_verdict(extract_json(self.extract(report)))
+            return validate_verdict(extract_json(call()))
         except ValueError:  # models occasionally wrap or truncate JSON; one retry is cheap
-            return validate_verdict(extract_json(self.extract(report)))
+            return validate_verdict(extract_json(call()))
 
 
 BERKSHIRE_DIR = Path(os.environ.get("BERKSHIRE_DIR", Path.home() / "ai-berkshire"))
-SKILL_TIMEOUT_S = 600
-MAX_PARALLEL = 2  # spec cap; live runs use 1 worker since a run finds its report by mtime in reports/
-TOOLS = "WebSearch,WebFetch,Read,Write,Bash,Task,Agent"
+QUICK_TIMEOUT_S = 300
+DEEP_TIMEOUT_S = 45 * 60
+QUICK_MODEL = os.environ.get("QUICK_MODEL", "sonnet")
+DEEP_TOOLS = "WebSearch,WebFetch,Read,Write,Bash,Task,Agent"
+QUICK_TOOLS = "WebSearch,WebFetch"
+# without this, a headless run can end its turn while its research agents are still working (seen on NVDA)
+DEEP_SUFFIX = ("(Non-interactive run: wait for every agent you start to finish, write the final report file, and end "
+               "with the verdict. Do not end your turn while any research is still running.)")
 EXTRACT_PROMPT = """The text on stdin is an investment research report (it may be in Chinese).
-Return ONLY a JSON object, no prose, with exactly these keys:
-  "verdict": "PASS" | "GRAY" | "FAIL"   (Pass/通过/准出 -> PASS, Gray zone/灰色地带 -> GRAY, Fail/不通过/打回 -> FAIL)
-  "score": overall score, a number 0-5
-  "masters": {"buffett": n, "munger": n, "duan": n, "lilu": n}  each 0-5, from the report's per-master view
-  "buy_low", "buy_high": the USD buy range for the aggressive or moderate strategy, or null if none is given
-  "target": the USD price at which the report would take profit or consider the stock fully valued, or null
-  "red_lines": short English strings, conditions that would break the thesis
-  "summary": 2-3 English sentences"""
+Map Pass/通过/准出 -> PASS, Gray zone/灰色地带 -> GRAY, Fail/不通过/打回 -> FAIL; take the buy range from the
+aggressive or moderate strategy; take per-master scores from the report's per-master view.
+""" + VERDICT_KEYS
 
 
-def _claude(args, stdin=None, timeout=SKILL_TIMEOUT_S):
+def _claude(args, stdin=None, timeout=QUICK_TIMEOUT_S):
     p = subprocess.run(["claude", "-p", *args, "--output-format", "json"], input=stdin, cwd=BERKSHIRE_DIR,
                        capture_output=True, text=True, timeout=timeout, check=True)
     return json.loads(p.stdout)["result"]
 
 
-def run_skill_cli(skill, args):
-    """Run an ai-berkshire command headless; return the report it saved under reports/, else its final answer."""
+def newest_report(root, since):
+    """ai-berkshire saves reports in per-company folders (reports/英伟达/...md)."""
+    found = [p for p in Path(root).rglob("*.md") if p.stat().st_mtime >= since]
+    return max(found, key=lambda p: p.stat().st_mtime) if found else None
+
+
+def run_quick_cli(prompt, stdin=None):
+    return _claude([prompt, "--model", QUICK_MODEL, "--allowedTools", QUICK_TOOLS], stdin=stdin)
+
+
+def run_deep_cli(skill, args):
+    """Run an ai-berkshire command headless; return the report it saved, else its final answer."""
     started = time.time()
-    answer = _claude([f"/{skill} {args}", "--allowedTools", TOOLS])
-    reports = [p for p in (BERKSHIRE_DIR / "reports").glob("*.md") if p.stat().st_mtime >= started]
-    return max(reports, key=lambda p: p.stat().st_mtime).read_text() if reports else answer
+    answer = _claude([f"/{skill} {args} {DEEP_SUFFIX}", "--allowedTools", DEEP_TOOLS], timeout=DEEP_TIMEOUT_S)
+    report = newest_report(BERKSHIRE_DIR / "reports", started)
+    return report.read_text() if report else answer
 
 
 def extract_cli(report):
     return _claude([EXTRACT_PROMPT], stdin=report[:150_000], timeout=180)
 
 
+def researcher():
+    return Researcher(run_quick_cli, run_deep_cli, extract_cli)
+
+
 def warm(ticker, accession):
-    """Run research for a recorded demo filing now and save the cache (data/verdicts), before the demo."""
+    """Cache quick and deep verdicts for a recorded demo filing before the demo (takes up to ~45 minutes)."""
     from record import filing_from_submissions, submissions
     from router import Router
 
     filing = filing_from_submissions(submissions(load_watchlist()[ticker]["cik"]), ticker, accession)
-    req = Router(load_watchlist()).on_filing({**filing, "run": "warm"})
-    if (DATA / "verdicts" / f"{req['request_id']}.json").exists():
-        sys.exit(f"cache already exists for {req['request_id']}; delete it to re-run")
-    Researcher(run_skill_cli, extract_cli).handle({**req, "run": LIVE}, lambda m: print(json.dumps(m, indent=2, ensure_ascii=False)))
+    req = {**Router(load_watchlist()).on_filing({**filing, "run": "warm"}), "run": LIVE}
+    show = lambda m: print(json.dumps(m, indent=2, ensure_ascii=False))
+    r = researcher()
+    r.handle(req, show, lambda _: r.deep_job(req, show))
 
 
 def main():
-    prod, researcher = producer(), Researcher(run_skill_cli, extract_cli)
-    live_pool = ThreadPoolExecutor(1)              # one live run at a time: reports are matched by mtime
-    cache_pool = ThreadPoolExecutor(MAX_PARALLEL)  # cache hits never wait behind a 10-minute live run
+    prod, r = producer(), researcher()
+    quick_pool = ThreadPoolExecutor(2)  # quick verdicts and news re-checks: a few minutes each
+    deep_pool = ThreadPoolExecutor(1)   # one /earnings-review at a time: its report is found by mtime
+    cache_pool = ThreadPoolExecutor(4)  # cache hits never wait behind live research
 
     def out(msg):
         emit(prod, "research-verdicts", msg["ticker"], msg)
         prod.flush()
-        print(f"{msg['run']} {msg['request_id']}: {msg['status']} {msg.get('verdict', '')} {msg.get('source', '')}")
+        print(f"{msg['run']} {msg['request_id']} {msg['tier']}: {msg['status']} {msg.get('verdict') or ''} "
+              f"{msg.get('source') or ''}")
 
-    def job(req):
+    def guarded(fn, *args):
         try:
-            researcher.handle(req, out)
-        except Exception as e:  # never let one request kill the worker silently
-            print(f"research job {req.get('request_id')}: {e!r}")
+            fn(*args)
+        except Exception as e:  # never let one request kill a worker silently
+            print(f"research job: {e!r}")
 
+    schedule_deep = lambda req: deep_pool.submit(guarded, r.deep_job, req, out)
     print(f"research: ai-berkshire at {BERKSHIRE_DIR}, waiting for skill-requests")
     for _, req in consume(["skill-requests"]):
-        (cache_pool if researcher.is_cached(req) else live_pool).submit(job, req)
+        (cache_pool if r.is_cached(req) else quick_pool).submit(guarded, r.handle, req, out, schedule_deep)
 
 
 if __name__ == "__main__":

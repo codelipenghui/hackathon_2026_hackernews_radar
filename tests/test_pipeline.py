@@ -30,14 +30,14 @@ def test_recorded_day_flows_from_filing_to_realized_pnl(tmp_path):
     def never(*_):
         raise AssertionError("a replay with a cached verdict must not run research")
     router, trader = Router(WATCH), Trader()
-    researcher = Researcher(never, never, data_dir=tmp_path / "data", cache_delay_s=0, sleep=lambda s: None)
+    researcher = Researcher(never, never, never, data_dir=tmp_path / "data", cache_delay_s=0, sleep=lambda s: None)
     out = []
     for _, topic, msg in schedule(lines, speed=1e9, run="replay-1"):
         if topic == "filings":
             req = router.on_filing(msg)
             out.append(("skill-requests", req))
             verdicts = []
-            researcher.handle(req, verdicts.append)
+            researcher.handle(req, verdicts.append, never)
             for v in verdicts:
                 out.append(("research-verdicts", v))
                 out += trader.on_verdict(v)

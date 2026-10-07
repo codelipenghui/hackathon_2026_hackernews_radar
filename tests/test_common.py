@@ -18,7 +18,8 @@ def test_fixture_examples_satisfy_contract(topic):
 
 
 def test_done_verdict_requires_verdict_fields():
-    started = {"run": LIVE, "ts": 1, "request_id": "r", "ticker": "MU", "status": "started", "skill": "earnings-review"}
+    started = {"run": LIVE, "ts": 1, "request_id": "r", "ticker": "MU", "status": "started", "skill": "earnings-review",
+               "tier": "quick"}
     assert missing_keys("research-verdicts", started) == set()
     assert "buy_low" in missing_keys("research-verdicts", {**started, "status": "done"})
 
@@ -51,3 +52,9 @@ def test_runs_started_in_the_same_second_get_distinct_ids(monkeypatch):
     first, second = common.new_replay_run(), common.new_replay_run()
     assert first == "replay-1759840000" and second == "replay-1759840000-2"
     assert run_start_ms(second) == 1759840000000
+
+
+def test_verdicts_carry_a_tier_and_triage_decisions_have_a_contract():
+    started = {"run": LIVE, "ts": 1, "request_id": "r", "ticker": "MU", "status": "started", "skill": "earnings-review"}
+    assert missing_keys("research-verdicts", started) == {"tier"}
+    assert "news-triage" in REQUIRED and "material" in REQUIRED["news-triage"]

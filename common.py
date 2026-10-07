@@ -21,10 +21,11 @@ REQUIRED = {
     "ticks": {"run", "ts", "ticker", "price", "volume", "session"},
     "news": {"run", "ts", "ticker", "source", "headline", "url"},
     "skill-requests": {"run", "ts", "request_id", "ticker", "skill", "args", "reason", "trigger"},
-    "research-verdicts": {"run", "ts", "request_id", "ticker", "status", "skill"},
+    "research-verdicts": {"run", "ts", "request_id", "ticker", "status", "skill", "tier"},
     "orders": {"run", "ts", "order_id", "ticker", "side", "qty", "rule", "reason", "request_id"},
     "fills": {"run", "ts", "order_id", "ticker", "side", "qty", "price"},
     "pnl": {"run", "ts", "cash", "equity", "realized", "unrealized", "positions"},
+    "news-triage": {"run", "ts", "ticker", "headline", "url", "source", "material", "direction", "reason", "request_id"},
 }
 VERDICT_DONE = {"source", "verdict", "score", "masters", "buy_low", "buy_high", "target",
                 "red_lines", "summary", "report_path", "duration_s"}
