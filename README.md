@@ -16,7 +16,8 @@ producer.py ▶ hn-events                                                    rep
 
 ```sh
 SEC_UA="AlphaRadar you@team.dev" docker compose up -d --build
-KAFKA=localhost:9092 BERKSHIRE_DIR=~/ai-berkshire python research.py   # on a machine logged in to Claude Code
+KAFKA=localhost:9092 BERKSHIRE_DIR=~/ai-berkshire python research.py   # quick (~30 s) + deep (/earnings-review) verdicts
+KAFKA=localhost:9092 python triage.py                                    # material news -> quick re-verdict
 open http://localhost:8080        # pick a recorded day, press "Replay earnings day"
 ```
 
