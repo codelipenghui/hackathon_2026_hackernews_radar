@@ -11,6 +11,7 @@ HN publishes maxitem / updates / topstories in ~30s ticks. Each change becomes o
 """
 import json
 import os
+import sys
 import threading
 import time
 import urllib.request
@@ -22,15 +23,20 @@ from confluent_kafka.schema_registry import Schema, SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 
+
+def setting(name):
+    return os.environ.get(name, "").strip() or sys.exit(f"{name} is not set (see .env.example)")
+
+
 API = "https://hacker-news.firebaseio.com/v0"
-KAFKA = os.environ["KAFKA_SERVICE_URL"]
+KAFKA = setting("KAFKA_SERVICE_URL")
 TOPIC = os.environ.get("TOPIC") or "hn-events"
 SCHEMA = Path(__file__).with_name("hn_event.avsc").read_text()
-TOKEN = os.environ["JWT_TOKEN"].strip()
-USER = os.environ["KAFKA_USERNAME"].strip()  # the service account the token belongs to; the broker rejects any other
+TOKEN = setting("JWT_TOKEN")
+USER = setting("KAFKA_USERNAME")  # the service account the token belongs to; the broker rejects any other
 
 # Kafka takes SASL/PLAIN with "token:<jwt>", the registry basic auth with the bare jwt
-registry = SchemaRegistryClient({"url": os.environ["SCHEMA_REGISTRY_URL"], "basic.auth.user.info": f"{USER}:{TOKEN}"})
+registry = SchemaRegistryClient({"url": setting("SCHEMA_REGISTRY_URL"), "basic.auth.user.info": f"{USER}:{TOKEN}"})
 schema_id = registry.register_schema(f"{TOPIC}-value", Schema(SCHEMA, "AVRO"))  # fails fast if incompatible
 serialize = AvroSerializer(registry, SCHEMA)
 context = SerializationContext(TOPIC, MessageField.VALUE)

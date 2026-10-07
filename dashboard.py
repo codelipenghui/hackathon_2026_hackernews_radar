@@ -6,6 +6,7 @@ rows every 2 seconds; RisingWave builds the JSON for each row. The SSE event id 
 so when EventSource reconnects it resumes where it left off.
 """
 import os
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,7 +14,7 @@ from pathlib import Path
 import psycopg
 from psycopg import sql
 
-RISINGWAVE_URL = os.environ["RISINGWAVE_URL"]
+RISINGWAVE_URL = os.environ.get("RISINGWAVE_URL", "").strip() or sys.exit("RISINGWAVE_URL is not set (see .env.example)")
 VIEW = os.environ.get("RISINGWAVE_MV") or "hn-events_mv"
 PORT = int(os.environ.get("PORT", 8080))
 REPLAY_MS = 60 * 60 * 1000

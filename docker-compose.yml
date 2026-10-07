@@ -1,22 +1,22 @@
-# producer:  Hacker News -> Avro -> Kafka topic hn-events on StreamNative Cloud
-# dashboard: RisingWave materialized view -> SSE -> http://localhost:8080
-# Settings come from .env (copy .env.example; .env is git-ignored). Each service only gets its own.
+# The two services run independently, each needing only its own part of .env (copy .env.example;
+# .env is git-ignored):
+#   docker compose up -d dashboard   # needs RISINGWAVE_URL
+#   docker compose up -d producer    # needs the StreamNative settings; run exactly one, anywhere
 services:
-  producer:
+  producer:  # Hacker News -> Avro -> Kafka topic hn-events on StreamNative Cloud (the image's default command)
     build: .
-    command: python producer.py
     restart: unless-stopped
     environment:
-      KAFKA_SERVICE_URL: ${KAFKA_SERVICE_URL:?set it in .env}
-      SCHEMA_REGISTRY_URL: ${SCHEMA_REGISTRY_URL:?set it in .env}
-      JWT_TOKEN: ${JWT_TOKEN:?set it in .env}
-      KAFKA_USERNAME: ${KAFKA_USERNAME:?set it in .env}
+      KAFKA_SERVICE_URL: ${KAFKA_SERVICE_URL:-}
+      SCHEMA_REGISTRY_URL: ${SCHEMA_REGISTRY_URL:-}
+      JWT_TOKEN: ${JWT_TOKEN:-}
+      KAFKA_USERNAME: ${KAFKA_USERNAME:-}
 
-  dashboard:
+  dashboard:  # RisingWave materialized view -> SSE -> http://localhost:8080
     build: .
     command: python dashboard.py
     restart: unless-stopped
     ports: ["8080:8080"]
     environment:
-      RISINGWAVE_URL: ${RISINGWAVE_URL:?set it in .env}
+      RISINGWAVE_URL: ${RISINGWAVE_URL:-}
       RISINGWAVE_MV: ${RISINGWAVE_MV:-}
