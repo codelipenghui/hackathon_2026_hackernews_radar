@@ -19,6 +19,11 @@ VIEW = os.environ.get("RISINGWAVE_MV") or "hn-events_mv"
 PORT = int(os.environ.get("PORT", 8080))
 REPLAY_MS = 60 * 60 * 1000
 PAGE = Path(__file__).with_name("index.html")
+ASSETS = {
+    "/dashboard.css": ("dashboard.css", "text/css; charset=utf-8"),
+    "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
+    "/radar-model.mjs": ("radar-model.mjs", "text/javascript; charset=utf-8"),
+}
 QUERY = sql.SQL("""
     SELECT (extract(epoch FROM ts) * 1000)::bigint,
            jsonb_build_object('kind', kind, 'ts', (extract(epoch FROM ts) * 1000)::bigint, 'item', to_jsonb(item),
@@ -29,9 +34,10 @@ QUERY = sql.SQL("""
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path != "/events":
-            body = PAGE.read_bytes()
+            filename, content_type = ASSETS.get(self.path, ("index.html", "text/html; charset=utf-8"))
+            body = PAGE.with_name(filename).read_bytes()
             self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

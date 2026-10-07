@@ -180,11 +180,30 @@ producer. It registers the new version on start and refuses to run if the change
 
 ## Dashboard
 
-- **Radar**: the 30 front-page stories. Distance from the center is the rank (#1 in the middle). The angle is fixed per story, so you can watch stories move in or out. Color goes from green to orange as the story gains points over 30 minutes. A ring pulses when a story gets new votes or comments. The outer band shows new submissions from the last 10 minutes.
-- **Front page**: the current top 30 with rank change over the last 30 minutes, plus points gained.
-- **Rising**: the stories that gained the most points in the last 30 minutes.
-- **Activity**: events per minute over the last hour, split by type.
-- **Live feed**: new stories and comments.
+- **Front page / Rising**: switch between the current front page and observed stories with the largest point gains. Eight stories appear initially; expand the list to see the rest. Rank changes and point gains use up to 30 minutes of available history.
+- **Radar**: the front-page stories, with #1 nearest the center. Each story has a stable angle; color shifts from sage to orange as it gains points. A scan completes one turn every six seconds, rank changes glide between rings, and fresh vote/comment updates emit a short pulse. Hover for details or click to open the discussion. Squares on the outer band are new submissions received in the last 10 minutes.
+- **Live feed**: recent stories and comments, with their reception time and author.
+- **Activity**: events per minute over the last hour, split by type, with hover details. The current minute is partial. Front-page snapshots are excluded from event counts; other new item types, such as jobs and polls, are shown as Other when present.
+- **Conversation leaders**: observed stories with the largest increase in total comment count, using up to 30 minutes of history.
+- **Front-page sources**: domain counts among the current front-page stories. Text-only posts are grouped as Hacker News; remaining domains are included in the remainder count.
+- **Topics / Emerging**: technical subjects and emerging comment topics from agent results, counted once per observed story when the stream supplies `story_id` with `subjects` or `emerging_topics`. These panels show a waiting state until analysis is supplied; the dashboard does not generate topic labels itself.
+- **Latest submissions**: new stories received in the last hour, with All / Show HN / Ask HN filters and progressive expansion. Scores and comment counts follow later item updates.
+
+The page scrolls naturally, with discussion, source, and submission views below the overview. These are
+observations from this stream, not a census of all Hacker News activity. A story seen only once has no
+measured growth. Shorter histories are not extrapolated to a full 30 minutes.
+
+The header's theme selector supports System (the default), Light, and Dark. A manual choice is saved
+in this browser and restored before first paint; System follows appearance changes while the page
+is open. Chart colors, radar scanning, tooltips, and ranking/number animations adapt together.
+
+Live changes roll the old number out and the new number in. Ranking changes move entire rows
+between their old and new positions over roughly one second, with a brief lift and direction tint.
+Consecutive ranking updates continue from the current visual position; value-only updates do not
+restart row movement. Charts interpolate to their new values.
+Existing rows retain their DOM nodes and keyboard focus; reading farther back in the live feed
+keeps the visible scroll anchor. Motion respects the system's reduced-motion preference, and the
+continuous radar loop pauses when it is outside the viewport or the page is hidden.
 
 A new tab rebuilds all of this from the last hour of the view, then checks for new rows every
 2 seconds. RisingWave builds the JSON for each row. Each SSE event id is the event's timestamp, so
@@ -203,10 +222,15 @@ when the browser reconnects it picks up where it left off.
 | `producer.py`        | Follows the HN streams and publishes Avro to Kafka                 |
 | `dashboard.py`       | Serves the page, and streams events from RisingWave on `/events`   |
 | `index.html`         | The dashboard page                                                 |
+| `dashboard.css`      | Responsive layout and light/dark themes                             |
+| `dashboard.js`       | UI rendering, controls, canvas charts, and SSE connection            |
+| `radar-model.mjs`    | Rolling event state, rankings, growth, and source statistics         |
 | `hn_event.avsc`      | Avro schema of the topic                                           |
 | `Dockerfile`         | One image for both parts; runs the producer by default            |
 | `docker-compose.yml` | Runs either part with Docker                                       |
 | `.env.example`       | Settings template                                                  |
+
+Data-model regression checks require Node.js 18+ and no extra packages: `node --test tests/radar-model.test.mjs`.
 
 ## Known limits
 
