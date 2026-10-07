@@ -44,6 +44,7 @@
   .seg button.on { background: #1a2531; color: var(--text); }
   .live-only, .replay-only { display: inline-flex; align-items: center; gap: 12px; }
   body.replay .live-only, body:not(.replay) .replay-only { display: none; }
+  #research { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }  /* verdicts can be long */
   .tier { display: inline-block; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; font-size: 11px; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; grid-template-rows: none; } }
 </style>
