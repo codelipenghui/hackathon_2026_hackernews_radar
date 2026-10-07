@@ -67,17 +67,34 @@ class Trader:
     def on_verdict(self, v):
         if v.get("status") != "done":
             return []
-        self.books[v["run"]].verdicts[v["ticker"]] = v
-        return []
+        book = self.books[v["run"]]
+        book.verdicts[v["ticker"]] = v
+        pos = book.positions.get(v["ticker"])
+        if v["verdict"] != "FAIL" or not pos:
+            return []
+        out = self._trade(book, v, v["ticker"], "SELL", pos["qty"], pos["last"], "thesis_fail",
+                          f"new verdict FAIL ({v['score']}/5): thesis broken", v["request_id"])
+        return out + [("pnl", self.pnl(book, v["run"], v["ts"]))]
 
     def on_tick(self, t):
-        book, ticker = self.books[t["run"]], t["ticker"]
+        book, ticker, price = self.books[t["run"]], t["ticker"], t["price"]
         book.bars[ticker].append(t)
         out = []
-        if ticker in book.positions:
-            book.positions[ticker]["last"] = t["price"]
+        pos = book.positions.get(ticker)
+        if pos:
+            pos["last"] = price
+            if price <= pos["stop"]:
+                out += self._trade(book, t, ticker, "SELL", pos["qty"], price, "turtle_stop",
+                                   f"price {price:.2f} hit the 2N stop {pos['stop']:.2f}", pos["request_id"])
+            elif price >= pos["target"]:
+                out += self._trade(book, t, ticker, "SELL", pos["qty"], price, "target_hit",
+                                   f"price {price:.2f} reached the target {pos['target']:.2f}", pos["request_id"])
         elif ticker in book.verdicts and ticker not in book.entered:
             out += self._try_entry(book, t)
+        if t.get("last"):  # end of a replay: close out so the scorer shows realized P&L
+            for other, p in list(book.positions.items()):
+                out += self._trade(book, t, other, "SELL", p["qty"], p["last"], "end_of_run",
+                                   "replay finished: closing out", p["request_id"])
         out.append(("pnl", self.pnl(book, t["run"], t["ts"])))
         return out
 

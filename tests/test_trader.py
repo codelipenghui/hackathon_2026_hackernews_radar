@@ -102,3 +102,55 @@ def test_only_one_entry_per_ticker_per_run():
     trader.on_tick(tick(6, 154, 2000))
     trader.on_tick(tick(7, 145, 1000))  # stopped out (Task 10)
     assert orders(trader.on_tick(tick(8, 155, 5000))) == []
+
+
+def bought(run="replay-1"):
+    trader = opened(run)
+    trader.on_tick(tick(6, 154, 2000, run=run))
+    return trader
+
+
+def test_stop_at_2n_sells():
+    [o] = orders(bought().on_tick(tick(7, 146, 1000)))
+    assert (o["side"], o["qty"], o["rule"]) == ("SELL", 125, "turtle_stop")
+
+
+def test_target_hit_sells_and_books_realized_pnl():
+    trader = bought()
+    assert orders(trader.on_tick(tick(7, 160, 1000))) == []
+    out = trader.on_tick(tick(8, 170, 1000))
+    assert orders(out)[0]["rule"] == "target_hit"
+    pnl = out[-1][1]
+    assert pnl["positions"] == {}
+    assert pnl["realized"] == pytest.approx((169.915 - 154.077) * 125, abs=0.01)
+    assert pnl["cash"] == pytest.approx(100_000 + pnl["realized"], abs=0.01)
+
+
+def test_target_defaults_to_110_percent_of_buy_high():
+    trader = Trader()
+    trader.on_verdict({**V, "target": None})
+    feed(trader, [(p, 1000) for p in OPENING] + [(154, 2000)])
+    assert orders(trader.on_tick(tick(7, 175, 1000))) == []
+    assert orders(trader.on_tick(tick(8, 176, 1000)))[0]["rule"] == "target_hit"
+
+
+def test_fail_verdict_sells_a_held_position():
+    trader = bought()
+    out = trader.on_verdict({**V, "verdict": "FAIL", "score": 1.5, "buy_low": None, "buy_high": None})
+    assert orders(out)[0]["rule"] == "thesis_fail"
+    assert out[-1] == ("pnl", trader.pnl(trader.books["replay-1"], "replay-1", V["ts"]))
+
+
+def test_last_tick_closes_everything():
+    trader = bought()
+    out = trader.on_tick(tick(7, 155, 1000, last=True))
+    assert orders(out)[0]["rule"] == "end_of_run"
+    assert out[-1][1]["positions"] == {}
+
+
+def test_runs_have_separate_books():
+    trader = bought("replay-1")
+    trader.on_verdict({**V, "run": "replay-2"})
+    assert trader.pnl(trader.books["replay-2"], "replay-2", 0)["equity"] == 100_000
+    out = feed(trader, [(p, 1000) for p in OPENING] + [(154, 2000)], run="replay-2")
+    assert orders(out)[0]["qty"] == 125  # a fresh $100k book, same sizing as run 1
