@@ -1,12 +1,13 @@
 """Follow the Hacker News Firebase API in real time and publish every change to Kafka.
 
 Firebase REST streaming (Server-Sent Events) pushes a new value for a node whenever it changes;
-HN publishes maxitem / updates / topstories in ~30s ticks. Each tick becomes Kafka messages:
+HN publishes maxitem / updates / topstories in ~30s ticks. Each change becomes one Avro HnEvent
+(hn_event.avsc, registered in Schema Registry as subject "<topic>-value"), keyed by item id/username:
 
-  {"kind": "new",     "ts": ms, "item": {...}}    a newly created story/comment/job/poll
-  {"kind": "update",  "ts": ms, "item": {...}}    an item that changed (score, comments, edits)
-  {"kind": "profile", "ts": ms, "id": "user"}     a user profile that changed
-  {"kind": "top",     "ts": ms, "items": [...]}   the current front page (top 30)
+  NEW      item    a newly created story/comment/job/poll
+  UPDATE   item    an item that changed (score, comments, edits)
+  PROFILE  user    a user profile that changed
+  TOP      items   the current front page (top 30)
 """
 import json
 import os
@@ -14,18 +15,27 @@ import threading
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
-from kafka import KafkaProducer
+from confluent_kafka import Producer
+from confluent_kafka.schema_registry import Schema, SchemaRegistryClient
+from confluent_kafka.schema_registry.avro import AvroSerializer
+from confluent_kafka.serialization import MessageField, SerializationContext
 
 API = "https://hacker-news.firebaseio.com/v0"
 TOPIC = os.environ.get("TOPIC", "hn-events")
-producer = KafkaProducer(
-    bootstrap_servers=os.environ.get("KAFKA", "localhost:9092"),
-    key_serializer=str.encode,
-    value_serializer=lambda v: json.dumps(v).encode(),
-    compression_type="gzip",
-    linger_ms=100,
-)
+SCHEMA = Path(__file__).with_name("hn_event.avsc").read_text()
+
+registry = SchemaRegistryClient({"url": os.environ.get("SCHEMA_REGISTRY", "http://localhost:8081")})
+schema_id = registry.register_schema(f"{TOPIC}-value", Schema(SCHEMA, "AVRO"))  # fails fast if incompatible
+serialize = AvroSerializer(registry, SCHEMA)
+context = SerializationContext(TOPIC, MessageField.VALUE)
+producer = Producer({
+    "bootstrap.servers": os.environ.get("KAFKA", "localhost:9092"),
+    "enable.idempotence": True,
+    "compression.type": "gzip",
+    "linger.ms": 100,
+})
 pool = ThreadPoolExecutor(16)
 
 
@@ -36,17 +46,20 @@ def get(path):
 
 def fetch_item(item_id):
     try:
-        item = get(f"item/{item_id}")
+        return get(f"item/{item_id}")  # fields not in the schema (kids) are dropped on serialization
     except Exception as e:
         print(f"item {item_id}: {e!r}")
         return None
-    if item:
-        item.pop("kids", None)  # child-id lists bloat every message; `parent` links already encode the tree
-    return item
 
 
-def emit(kind, key, **data):
-    producer.send(TOPIC, key=str(key), value={"kind": kind, "ts": int(time.time() * 1000), **data})
+def emit(kind, key, **fields):
+    try:
+        value = serialize({"kind": kind, "ts": int(time.time() * 1000), **fields}, context)
+    except Exception as e:  # one item that breaks the schema must not abort (and endlessly retry) its whole batch
+        print(f"skipping {kind} {key}: {e!r}")
+        return
+    producer.produce(TOPIC, key=str(key), value=value)
+    producer.poll(0)  # serve delivery reports
 
 
 def follow(path, on_change):
@@ -83,7 +96,7 @@ def on_maxitem(max_id):
             time.sleep(2)
             items = list(pool.map(fetch_item, pending))
             for item in filter(None, items):
-                emit("new", item["id"], item=item)
+                emit("NEW", item["id"], item=item)
             pending = [i for i, item in zip(pending, items) if not item]
             if not pending:
                 break
@@ -98,19 +111,19 @@ def on_updates(updates):
     last_updates = updates
     items = [i for i in pool.map(fetch_item, updates.get("items", [])) if i]
     for item in items:
-        emit("update", item["id"], item=item)
+        emit("UPDATE", item["id"], item=item)
     for name in updates.get("profiles", []):
-        emit("profile", name, id=name)
+        emit("PROFILE", name, user=name)
     print(f"updates: {len(items)} items, {len(updates.get('profiles', []))} profiles")
 
 
 def on_topstories(ids):
     items = [i for i in pool.map(fetch_item, ids[:30]) if i]
-    emit("top", "top", items=items)
+    emit("TOP", "top", items=items)
     print(f"top: {len(items)} stories")
 
 
 for path, handler in [("maxitem", on_maxitem), ("updates", on_updates), ("topstories", on_topstories)]:
     threading.Thread(target=follow, args=(path, handler), daemon=True).start()
-print(f"streaming Hacker News -> kafka topic {TOPIC!r}")
+print(f"streaming Hacker News -> kafka topic {TOPIC!r} (Avro, schema id {schema_id})")
 threading.Event().wait()

@@ -28,20 +28,35 @@ services:
       timeout: 20s
       retries: 3
 
-  producer:  # HN firebase SSE -> kafka topic hn-events
+  schema-registry:  # Confluent Schema Registry, schemas stored in the _schemas topic
+    image: confluentinc/cp-schema-registry:8.2.4
+    restart: unless-stopped
+    ports: ["8081:8081"]
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:19092
+    depends_on: { kafka: { condition: service_healthy } }
+    healthcheck:
+      test: curl -fs localhost:8081/subjects
+      start_period: 60s
+      start_interval: 2s
+      interval: 30s
+
+  producer:  # HN firebase SSE -> Avro -> kafka topic hn-events
     build: .
     command: python producer.py
     restart: unless-stopped
-    environment: { KAFKA: "kafka:19092" }
-    depends_on: { kafka: { condition: service_healthy } }
+    environment: { KAFKA: "kafka:19092", SCHEMA_REGISTRY: "http://schema-registry:8081" }
+    depends_on: { schema-registry: { condition: service_healthy } }
 
   dashboard:  # kafka -> SSE -> http://localhost:8080
     build: .
     command: python dashboard.py
     restart: unless-stopped
     ports: ["8080:8080"]
-    environment: { KAFKA: "kafka:19092" }
-    depends_on: { kafka: { condition: service_healthy } }
+    environment: { KAFKA: "kafka:19092", SCHEMA_REGISTRY: "http://schema-registry:8081" }
+    depends_on: { schema-registry: { condition: service_healthy } }
 
 volumes:
   kafka-data:

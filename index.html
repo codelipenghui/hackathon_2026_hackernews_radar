@@ -160,7 +160,7 @@ function track(it, t) {
 }
 
 function ingest(ev) {
-  const {ts: t, kind, item: it} = ev;
+  const {ts: t, item: it} = ev, kind = ev.kind.toLowerCase();  // Avro enum: NEW | UPDATE | PROFILE | TOP
   lastTs = Math.max(lastTs, t);
   if (kind === 'top') {
     front = ev.items;

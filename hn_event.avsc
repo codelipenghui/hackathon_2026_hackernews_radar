@@ -1,0 +1,42 @@
+{
+  "type": "record",
+  "name": "HnEvent",
+  "namespace": "hnradar",
+  "doc": "A change observed on the Hacker News Firebase API (https://github.com/HackerNews/API). Which of item/user/items is set depends on kind.",
+  "fields": [
+    {
+      "name": "kind",
+      "type": {"type": "enum", "name": "Kind", "symbols": ["NEW", "UPDATE", "PROFILE", "TOP"]},
+      "doc": "NEW: an item was created (item). UPDATE: an item changed (item). PROFILE: a user profile changed (user). TOP: the front page changed (items)."
+    },
+    {"name": "ts", "type": {"type": "long", "logicalType": "timestamp-millis"}, "doc": "When the producer observed the change."},
+    {
+      "name": "item",
+      "default": null,
+      "doc": "NEW and UPDATE: the item as /v0/item/<id> returned it.",
+      "type": ["null", {
+        "type": "record",
+        "name": "Item",
+        "doc": "A Hacker News item. Child ids (kids) are omitted: parent links already encode the tree.",
+        "fields": [
+          {"name": "id", "type": "long"},
+          {"name": "type", "type": ["null", "string"], "default": null, "doc": "job, story, comment, poll or pollopt."},
+          {"name": "by", "type": ["null", "string"], "default": null, "doc": "Username of the author."},
+          {"name": "time", "type": ["null", "long"], "default": null, "doc": "Creation time, Unix seconds."},
+          {"name": "title", "type": ["null", "string"], "default": null, "doc": "Story, poll or job title (HTML)."},
+          {"name": "url", "type": ["null", "string"], "default": null},
+          {"name": "text", "type": ["null", "string"], "default": null, "doc": "Comment, story or poll text (HTML)."},
+          {"name": "score", "type": ["null", "int"], "default": null, "doc": "Story score, or votes for a pollopt."},
+          {"name": "descendants", "type": ["null", "int"], "default": null, "doc": "Total comment count of a story or poll."},
+          {"name": "parent", "type": ["null", "long"], "default": null, "doc": "Parent story or comment of a comment."},
+          {"name": "poll", "type": ["null", "long"], "default": null, "doc": "Poll a pollopt belongs to."},
+          {"name": "parts", "type": ["null", {"type": "array", "items": "long"}], "default": null, "doc": "Pollopts of a poll, in display order."},
+          {"name": "dead", "type": "boolean", "default": false},
+          {"name": "deleted", "type": "boolean", "default": false}
+        ]
+      }]
+    },
+    {"name": "user", "type": ["null", "string"], "default": null, "doc": "PROFILE: the username whose profile changed."},
+    {"name": "items", "type": ["null", {"type": "array", "items": "Item"}], "default": null, "doc": "TOP: the 30 front-page stories, in rank order."}
+  ]
+}
