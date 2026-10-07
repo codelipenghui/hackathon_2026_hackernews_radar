@@ -224,7 +224,7 @@ function drawChart() {
   };
   if (v?.buy_low != null) { g.fillStyle = '#3ddc8422'; g.fillRect(L, y(v.buy_high), R - L, y(v.buy_low) - y(v.buy_high)); }
   T.forEach((t, i) => { if (t.session !== 'regular') { g.fillStyle = '#ffffff06'; g.fillRect(x(i) - (R - L) / T.length / 2, TOP, (R - L) / T.length, B - TOP); } });
-  if (S.filing?.ticker === tk) {
+  if (S.filing?.ticker === tk && S.filing.ts >= T[0].ts) {  // a live on-demand filing may predate the chart
     const i = T.findIndex(t => t.ts >= S.filing.ts);
     if (i >= 0) { g.strokeStyle = '#4da3ff'; g.beginPath(); g.moveTo(x(i), TOP); g.lineTo(x(i), B); g.stroke(); g.fillStyle = '#4da3ff'; g.fillText('8-K', x(i) + 3, TOP + 10); }
   }
