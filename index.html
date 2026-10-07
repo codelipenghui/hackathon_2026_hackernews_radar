@@ -115,12 +115,12 @@
   </section>
   <div class="col">
     <section class="panel">
-      <h2>Rising <small class="dim">points gained in the last 30 min</small></h2>
-      <ol id="rising"></ol>
+      <h2>Topics <small class="dim">AI, LLM, Rust, Cloud, etc.</small></h2>
+      <ul id="subjects"></ul>
     </section>
-    <section class="panel" style="flex: 1.4">
-      <h2>Live feed <small class="dim">new stories &amp; comments</small></h2>
-      <ul id="feed"></ul>
+    <section class="panel">
+      <h2>Emerging <small class="dim">detected in comments</small></h2>
+      <ul id="emerging"></ul>
     </section>
   </div>
 </main>
@@ -145,6 +145,8 @@ const stories = new Map();                           // id -> {item, hist: [[ts,
 let front = [], frontIds = new Set(), frontHist = []; // current top 30 + earlier snapshots for rank movement
 let feed = [], contacts = [], pings = [], heat = new Map();
 let source = '…', lastTs = 0;
+const subjects = new Map();                          // id -> ['AI', 'LLM', 'Rust', ...]
+const emergingTopics = new Map();                    // id -> ['model compression', 'quantization', ...]
 
 function track(it, t) {
   let s = stories.get(it.id);
@@ -162,6 +164,17 @@ function track(it, t) {
 function ingest(ev) {
   const {ts: t, item: it} = ev, kind = ev.kind.toLowerCase();  // Avro enum: NEW | UPDATE | PROFILE | TOP
   lastTs = Math.max(lastTs, t);
+
+  // Track subjects from agent output (if available in stream)
+  if (ev.subjects && Array.isArray(ev.subjects)) {
+    subjects.set(ev.story_id, ev.subjects);
+  }
+
+  // Track emerging topics from agent output (if available in stream)
+  if (ev.emerging_topics && Array.isArray(ev.emerging_topics)) {
+    emergingTopics.set(ev.story_id, ev.emerging_topics);
+  }
+
   if (kind === 'top') {
     front = ev.items;
     frontIds = new Set(front.map(s => s.id));
@@ -239,6 +252,38 @@ function render() {
     const body = c ? `<b>${esc(it.by)}</b> ${esc(e.snip ??= plain(it.text).slice(0, 240))}` : `<b>${esc(it.title)}</b> <small class="dim">${esc(domain(it.url))}</small>`;
     return `<li class="${c ? 'comment' : 'story'}${now - e.t < 4000 ? ' fresh' : ''}"><time class="dim">${clock(e.t)}</time><i class="tag">${esc(it.type)}</i>${link(it.id, body, c ? e.snip : it.title)}</li>`;
   }).join('') || '<li class="dim">waiting for new items…</li>');
+
+  // Render top technical subjects (from agent extraction)
+  const subjectCounts = new Map();
+  for (const [storyId, subs] of subjects) {
+    if (stories.has(storyId)) {
+      for (const sub of subs) {
+        subjectCounts.set(sub, (subjectCounts.get(sub) || 0) + 1);
+      }
+    }
+  }
+  const topSubjects = Array.from(subjectCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12);
+  html('#subjects', topSubjects.length ? topSubjects.map(([s, cnt]) =>
+    `<li><span style="color: #666; font-size: 11px">${cnt}</span> <span style="font-weight: 600; color: #fff">${esc(s)}</span></li>`
+  ).join('') : '<li class="dim">analyzing story titles…</li>');
+
+  // Render top emerging topics (from agent analysis)
+  const topicCounts = new Map();
+  for (const [storyId, tops] of emergingTopics) {
+    if (stories.has(storyId)) {
+      for (const top of tops) {
+        topicCounts.set(top, (topicCounts.get(top) || 0) + 1);
+      }
+    }
+  }
+  const topTopics = Array.from(topicCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12);
+  html('#emerging', topTopics.length ? topTopics.map(([t, cnt]) =>
+    `<li><span style="color: #666; font-size: 11px">${cnt}</span> <span style="font-weight: 600; color: #4da3ff">${esc(t)}</span></li>`
+  ).join('') : '<li class="dim">analyzing comments…</li>');
 
   drawChart(now);
 }
