@@ -123,10 +123,18 @@ export class RadarModel {
     const counts = { story: 0, comment: 0, update: 0, profile: 0, other: 0 };
     const bins = Array.from({ length: 60 }, () => ({ story: 0, comment: 0, update: 0, profile: 0, other: 0 }));
     const end = Math.floor(now / 60_000) * 60_000 + 60_000;
+    // Include both partial edge seconds, then clip the display to the exact rolling minute.
+    const secondStart = Math.floor((now - 60_000) / 1000) * 1000;
+    const secondBins = Array.from({ length: 61 }, (_, i) => ({ ts: secondStart + i * 1000, count: 0 }));
+    let recentTotal = 0;
     let recent = 0;
     for (const e of this.events) {
       counts[e.type]++;
       if (e.ts > now - 300_000) recent++;
+      if (e.ts > now - 60_000) {
+        secondBins[Math.floor((e.ts - secondStart) / 1000)].count++;
+        recentTotal++;
+      }
       const index = 59 - Math.floor((end - e.ts - 1) / 60_000);
       if (index >= 0 && index < 60) bins[index][e.type]++;
     }
@@ -138,6 +146,7 @@ export class RadarModel {
     const submissions = [...this.submissions.values()].map(entry => ({ ...entry, item: this.stories.get(entry.item.id)?.item || entry.item }))
       .filter(entry => visible(entry.item)).sort((a, b) => b.ts - a.ts);
     return { now, front, counts, bins, binEnd: end, rate: Math.round(recent / 5),
+      recentActivity: { bins: secondBins, total: recentTotal, peak: Math.max(0, ...secondBins.map(bin => bin.count)) },
       subjects: rankLabels(this.subjects), emergingTopics: rankLabels(this.emergingTopics),
       rising: rows.filter(r => r.item.type === 'story' && r.gain.points > 0).sort((a, b) => b.gain.points - a.gain.points || b.item.id - a.item.id),
       conversations: rows.filter(r => r.item.type === 'story' && r.gain.comments > 0).sort((a, b) => b.gain.comments - a.gain.comments || b.item.id - a.item.id),

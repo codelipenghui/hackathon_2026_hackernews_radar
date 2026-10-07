@@ -110,3 +110,42 @@ test('analysis keeps the latest result, can be cleared, and expires with the obs
   assert.deepEqual(model.snapshot(now).subjects, []);
   assert.deepEqual(model.snapshot(now + HOUR).emergingTopics, []);
 });
+
+test('live activity counts exact rolling seconds, including partial edges and empty seconds', () => {
+  const model = new RadarModel(), tick = now + 456;
+  const events = [
+    { kind: 'NEW', ts: tick - 60_000, item: story(1) },
+    { kind: 'NEW', ts: tick - 59_999, item: story(2) },
+    { kind: 'UPDATE', ts: tick - 1500, item: story(3) },
+    { kind: 'PROFILE', ts: tick - 1500, user: 'one' },
+    { kind: 'NEW', ts: tick, item: { id: 10, type: 'comment' } },
+  ];
+  events.forEach(event => model.ingest(event));
+  model.ingest(events[2]); // SSE replay does not count an event twice.
+  top(model, tick, [story(2)]);
+  model.ingest({ kind: 'ANALYSIS', ts: tick, story_id: 2, subjects: ['AI'] });
+  const activity = model.snapshot(tick).recentActivity;
+  assert.equal(activity.bins.length, 61);
+  assert.equal(activity.total, 4);
+  assert.equal(activity.peak, 2);
+  assert.equal(activity.bins[0].count, 1);
+  assert.equal(activity.bins[58].count, 2);
+  assert.equal(activity.bins[60].count, 1);
+  assert.equal(activity.bins.filter(bin => bin.count === 0).length, 58);
+  assert.equal(activity.bins.reduce((count, bin) => count + bin.count, 0), activity.total);
+});
+
+test('live activity advances without new events and expires to a truthful zero', () => {
+  const model = new RadarModel();
+  model.ingest({ kind: 'NEW', ts: now - 59_500, item: story(1) });
+  model.ingest({ kind: 'UPDATE', ts: now - 100, item: story(1, 12) });
+  const before = model.snapshot(now).recentActivity;
+  const after = model.snapshot(now + 1000).recentActivity;
+  assert.equal(before.total, 2);
+  assert.equal(after.total, 1);
+  assert.equal(after.bins[0].ts - before.bins[0].ts, 1000);
+  const expired = model.snapshot(now + 60_000).recentActivity;
+  assert.equal(expired.total, 0);
+  assert.equal(expired.peak, 0);
+  assert.ok(expired.bins.every(bin => bin.count === 0));
+});

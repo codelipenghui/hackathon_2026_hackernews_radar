@@ -48,6 +48,12 @@ h1 { display: flex; align-items: center; gap: 15px; margin: 0; font-size: 29px; 
 #last-event { color: var(--muted); margin-left: 10px; }
 .status-dot { height: 8px; width: 8px; border-radius: 50%; background: #b9bdc5; }
 .connection.live .status-dot { background: var(--green); }
+.connection.live .status-dot { animation: connection-breathe 2s ease-in-out infinite; }
+@keyframes connection-breathe {
+  0%, 100% { opacity: .65; box-shadow: 0 0 0 0 rgba(var(--radar-beam), 0); }
+  50% { opacity: 1; box-shadow: 0 0 0 4px rgba(var(--radar-beam), .12); }
+}
+:root.page-hidden .status-dot { animation-play-state: paused; }
 .connection.offline .status-dot, .connection.stale .status-dot { background: var(--accent); }
 .summary { display: grid; grid-template-columns: repeat(5, 1fr); padding: 26px 0; border-bottom: 1px solid var(--line); }
 .metric { display: flex; flex-direction: column; padding-left: 32px; border-left: 1px solid var(--line); }
@@ -55,6 +61,14 @@ h1 { display: flex; align-items: center; gap: 15px; margin: 0; font-size: 29px; 
 .metric strong { font-size: 31px; line-height: 1.2; font-weight: 620; letter-spacing: -.7px; font-variant-numeric: tabular-nums; }
 .metric > span { margin-top: 4px; color: var(--muted); font-size: 15px; }
 .metric small { color: var(--muted); font-size: 12px; }
+.live-pulse { display: grid; grid-template-columns: 185px minmax(0, 1fr) 135px; align-items: center; gap: 28px; padding: 15px 0; border-bottom: 1px solid var(--line); }
+.pulse-heading h2 { font-size: 15px; letter-spacing: -.15px; }
+.pulse-heading p { margin: 4px 0 0; font-size: 11px; color: var(--muted); }
+.pulse-plot { min-width: 0; height: 65px; }
+.pulse-summary { text-align: right; white-space: nowrap; }
+.pulse-summary strong { font-size: 19px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.pulse-summary > div > span, .pulse-summary time { font-size: 11px; color: var(--muted); }
+.pulse-summary time { display: block; margin-top: 3px; font-variant-numeric: tabular-nums; letter-spacing: .04em; }
 .section { padding: 30px 0; border-bottom: 1px solid var(--line); }
 .overview { display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(290px, 1fr); gap: 30px; align-items: start; }
 .news { min-width: 0; }
@@ -102,7 +116,7 @@ canvas { display: block; width: 100%; height: 100%; }
 .feed-list { max-height: 277px; overflow-y: auto; margin-top: 9px; scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent; }
 .feed-item { padding: 10px 0; }
 .feed-meta { display: flex; gap: 15px; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
-.feed-meta time { font-variant-numeric: tabular-nums; }
+.feed-meta time { min-width: 8ch; font-variant-numeric: tabular-nums; }
 .feed-link { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
 .feed-link strong { font-weight: 600; color: var(--text); margin-right: 6px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 20px; }
@@ -176,6 +190,8 @@ footer a { margin-left: auto; white-space: nowrap; }
   .metric strong { font-size: 25px; }
   .metric > span { font-size: 12px; }
   .metric small { font-size: 11px; }
+  .live-pulse { grid-template-columns: 145px minmax(0, 1fr) 100px; gap: 16px; }
+  .pulse-summary strong { font-size: 17px; }
   .overview { grid-template-columns: 1fr; }
   .side-rail { padding-left: 0; border-left: 0; border-top: 1px solid var(--line); padding-top: 26px; display: grid; grid-template-columns: 1fr 1fr; gap: 30px; }
   .feed-section { margin: 0; padding: 0; border: 0; }
@@ -209,6 +225,9 @@ footer a { margin-left: auto; white-space: nowrap; }
   .metric strong { font-size: 26px; }
   .metric > span { font-size: 13px; }
   .metric small { font-size: 11px; }
+  .live-pulse { grid-template-columns: 1fr auto; gap: 7px 16px; padding: 17px 0 12px; }
+  .pulse-plot { grid-column: 1 / -1; grid-row: 2; height: 57px; }
+  .pulse-summary { grid-column: 2; grid-row: 1; }
   .section { padding: 26px 0; }
   .story-columns, .story-row { grid-template-columns: 37px minmax(0, 1fr) 45px; gap: 10px; }
   .story-columns > :last-child, .story-row > .comment-count { display: none; }
@@ -249,4 +268,5 @@ footer a { margin-left: auto; white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   .source-fill { transition: none; }
+  .connection.live .status-dot { animation: none; }
 }

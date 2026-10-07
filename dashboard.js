@@ -6,6 +6,7 @@ const fmt = value => Number(value || 0).toLocaleString();
 const itemUrl = id => `https://news.ycombinator.com/item?id=${Number(id)}`;
 const age = ms => ms < 60_000 ? `${Math.max(0, Math.floor(ms / 1000))}s` : ms < HOUR ? `${Math.floor(ms / 60_000)}m` : `${Math.floor(ms / HOUR)}h`;
 const clock = ts => new Date(ts).toLocaleTimeString([], { hour12: false });
+const relativeTime = ms => ms < 2000 ? 'Just now' : `${age(ms)} ago`;
 const plain = html => new DOMParser().parseFromString(String(html || '').replace(/<p>/gi, ' '), 'text/html').body.textContent || '';
 function readPalette() {
   const styles = getComputedStyle(document.documentElement);
@@ -140,10 +141,11 @@ function html(selector, markup) {
   });
   if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
   if (anchor?.isConnected) list.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
-  if (moving) changes.forEach(({ row, inserted }, i) => {
+  let insertedOrder = 0;
+  if (moving) changes.forEach(({ row, inserted }) => {
     if (!inView(row)) return;
     if (inserted) {
-      animate(row, 'position', [{ opacity: 0, transform: 'translateY(18px)' }, { opacity: 1, transform: 'translateY(0)' }], 650, Math.min(i, 4) * 35);
+      animate(row, 'position', [{ opacity: 0, transform: 'translateY(18px)' }, { opacity: 1, transform: 'translateY(0)' }], 550, previous.size ? Math.min(insertedOrder++, 3) * 100 : 0, { fill: 'backwards' });
       return;
     }
     const before = positions.get(row.dataset.key), target = row.offsetTop;
@@ -191,7 +193,7 @@ function renderFeed() {
     const comment = item.type === 'comment';
     if (!snippets.has(item.id)) snippets.set(item.id, plain(item.text).slice(0, 240));
     const excerpt = comment ? snippets.get(item.id) : item.title || 'Untitled submission';
-    return `<li class="feed-item" data-key="${item.id}"><div class="feed-meta"><time datetime="${new Date(ts).toISOString()}">${clock(ts)}</time><span>${comment ? 'Comment' : esc((item.type || 'story').replace(/^./, c => c.toUpperCase()))}</span></div><a class="feed-link" href="${itemUrl(item.id)}" target="_blank" rel="noopener" title="${esc(excerpt)}"><strong>${esc(item.by || 'anonymous')}</strong> ${esc(excerpt)}</a></li>`;
+    return `<li class="feed-item" data-key="${item.id}"><div class="feed-meta"><time datetime="${new Date(ts).toISOString()}" title="${esc(new Date(ts).toLocaleString())}">${relativeTime(snapshot.now - ts)}</time><span>${comment ? 'Comment' : esc((item.type || 'story').replace(/^./, c => c.toUpperCase()))}</span></div><a class="feed-link" href="${itemUrl(item.id)}" target="_blank" rel="noopener" title="${esc(excerpt)}"><strong>${esc(item.by || 'anonymous')}</strong> ${esc(excerpt)}</a></li>`;
   }).join('') || empty('Waiting for new stories and comments…'));
   const ids = new Set(snapshot.feed.map(e => e.item.id));
   for (const id of snippets.keys()) if (!ids.has(id)) snippets.delete(id);
@@ -235,12 +237,12 @@ function render() {
     if (element) setMetric(element, snapshot.lastTs ? value : null);
   }
   setMetric($('#k-rate'), snapshot.lastTs ? snapshot.rate : null);
-  renderStatus(); renderNews(); renderFeed(); renderInsights(); renderLatest(); updateChartTarget(); renderChartSummary(); updateRadarTargets(); drawChart(); drawRadar(); syncMotionLoop();
+  renderStatus(); renderNews(); renderFeed(); renderInsights(); renderLatest(); updateChartTarget(); renderChartSummary(); updateRadarTargets(); renderPulseSummary(); drawPulse(); drawChart(); drawRadar(); syncMotionLoop();
 }
 
 const stream = new EventSource('/events');
-stream.onopen = () => { connected = true; renderStatus(); syncMotionLoop(); };
-stream.onerror = () => { connected = false; renderStatus(); syncMotionLoop(); };
+stream.onopen = () => { connected = true; renderStatus(); renderPulseSummary(); drawPulse(); syncMotionLoop(); };
+stream.onerror = () => { connected = false; renderStatus(); renderPulseSummary(); drawPulse(); syncMotionLoop(); };
 stream.onmessage = event => {
   try { model.ingest(JSON.parse(event.data)); }
   catch (error) { console.warn('Skipped an invalid stream event:', error.message); }
@@ -288,6 +290,62 @@ function canvasContext(canvas) {
   ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   ctx.lineWidth = 1; ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
   return { ctx, w, h };
+}
+
+const pulse = $('#pulse');
+let pulseVisible = true;
+function renderPulseSummary() {
+  const { total, peak } = snapshot.recentActivity;
+  setMetric($('#pulse-count'), snapshot.lastTs ? total : null);
+  const now = new Date();
+  $('#pulse-clock').textContent = clock(now);
+  $('#pulse-clock').dateTime = now.toISOString();
+  pulse.setAttribute('aria-label', snapshot.lastTs
+    ? `Observed events per second over the last 60 seconds. ${fmt(total)} events, peak ${fmt(peak)} in one second. Edge seconds are partial. ${connected ? 'Connected.' : 'Connection interrupted.'}`
+    : 'Waiting for observed event history.');
+}
+function drawPulse(time = performance.now()) {
+  const { ctx, w, h } = canvasContext(pulse), left = 3, right = w - 8, top = 7, bottom = h - 19;
+  if (right <= left || bottom <= top) return;
+  const now = Date.now(), start = now - 60_000, { bins, peak } = snapshot.recentActivity;
+  const scale = Math.max(1, peak), x = ts => left + (ts - start) / 60_000 * (right - left);
+  const y = count => bottom - count / scale * (bottom - top);
+  ctx.strokeStyle = palette.chartGrid; ctx.beginPath(); ctx.moveTo(left, bottom); ctx.lineTo(right, bottom); ctx.stroke();
+  // Time advances even through zero-event seconds. Never synthesize activity between batches.
+  ctx.save(); ctx.beginPath(); ctx.rect(left, 0, right - left, h); ctx.clip();
+  for (let tick = Math.ceil(start / 1000) * 1000; tick <= now; tick += 1000) {
+    const major = tick % 10_000 === 0;
+    ctx.globalAlpha = major ? .8 : .35;
+    ctx.strokeStyle = palette.chartGrid;
+    ctx.beginPath(); ctx.moveTo(x(tick), major ? top : bottom - 3); ctx.lineTo(x(tick), bottom + 3); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.beginPath(); ctx.moveTo(left, bottom);
+  let current = 0;
+  for (const bin of bins) {
+    if (bin.ts + 1000 <= start || bin.ts > now) continue;
+    const begin = Math.max(start, bin.ts), end = Math.min(now, bin.ts + 1000);
+    ctx.lineTo(x(begin), y(bin.count)); ctx.lineTo(x(end), y(bin.count));
+    if (bin.ts === Math.floor(now / 1000) * 1000) current = bin.count;
+  }
+  ctx.lineTo(right, y(current));
+  ctx.strokeStyle = connected ? `rgba(${palette.beam},.9)` : palette.muted;
+  ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.stroke();
+  ctx.lineTo(right, bottom); ctx.closePath();
+  ctx.globalAlpha = .10; ctx.fillStyle = palette.series.update; ctx.fill();
+  ctx.restore();
+  const live = connected && snapshot.lastTs && now - snapshot.lastTs <= 120_000;
+  const beat = live && motionAllowed() ? (Math.sin(time / 1000 * Math.PI * 2) + 1) / 2 : 0;
+  const dotY = y(current);
+  if (live && motionAllowed()) {
+    ctx.fillStyle = `rgba(${palette.beam},${.06 + beat * .09})`;
+    ctx.beginPath(); ctx.arc(right, dotY, 4.5 + beat * 2, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.fillStyle = live ? palette.series.update : palette.muted;
+  ctx.beginPath(); ctx.arc(right, dotY, 2.4, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = palette.muted; ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  ctx.textAlign = 'left'; ctx.fillText('60s ago', left, h - 2);
+  ctx.textAlign = 'right'; ctx.fillText(connected ? 'Now' : 'Reconnecting', right, h - 2);
 }
 
 const chart = $('#chart'), chartTip = $('#chart-tip');
@@ -420,8 +478,14 @@ function drawRadar(time = performance.now()) {
     const start = palette.cool, end = palette.warm;
     const color = start.map((v, i) => Math.round(v + (end[i] - v) * heat));
     const size = blip.size, glow = animated ? Math.exp(-((sweepAngle - angle + TAU) % TAU) / .65) : 0;
+    if (glow > .02) {
+      ctx.fillStyle = `rgba(${color.join(',')},${glow * .13})`;
+      ctx.beginPath(); ctx.arc(x, y, size + 3 + glow * 6, 0, TAU); ctx.fill();
+    }
+    ctx.shadowColor = `rgba(${color.join(',')},${glow * .55})`; ctx.shadowBlur = glow * 10;
     ctx.fillStyle = `rgba(${color.join(',')},${.76 + glow * .24})`;
     ctx.beginPath(); ctx.arc(x, y, size, 0, TAU); ctx.fill();
+    ctx.shadowBlur = 0;
     ctx.strokeStyle = palette.bg; ctx.stroke();
     if (row.rank === 1) { ctx.fillStyle = palette.muted; ctx.fillText('#1', x + size + 4, y + 4); }
     if (selectedHit?.row.item.id === row.item.id) {
@@ -453,9 +517,9 @@ radar.addEventListener('pointermove', event => {
 });
 radar.addEventListener('pointerleave', () => { selectedHit = null; radarTip.hidden = true; drawRadar(); });
 radar.addEventListener('click', event => { const { hit } = hitAt(event); if (hit) window.open(itemUrl(hit.row.item.id), '_blank', 'noopener'); });
-// One render loop, paused when the page or both charts are out of view.
+// One render loop, paused when the page or all animated canvases are out of view.
 function syncMotionLoop() {
-  const needed = motionAllowed() && ((radarVisible && connected) || (chartVisible && chartMotion && performance.now() - chartMotion.start < 500));
+  const needed = motionAllowed() && (((radarVisible || pulseVisible) && connected) || (chartVisible && chartMotion && performance.now() - chartMotion.start < 500));
   if (needed && !radarFrame) radarFrame = requestAnimationFrame(motionFrame);
   if (!needed && radarFrame) { cancelAnimationFrame(radarFrame); radarFrame = 0; }
 }
@@ -463,6 +527,7 @@ function motionFrame(time) {
   radarFrame = 0;
   if (!motionAllowed()) return;
   if (radarVisible && connected) drawRadar(time);
+  if (pulseVisible && connected) drawPulse(time);
   if (chartVisible && chartMotion && time - chartMotion.start < 550) drawChart(time);
   syncMotionLoop();
 }
@@ -470,11 +535,13 @@ const chartObserver = new IntersectionObserver(entries => {
   for (const entry of entries) {
     if (entry.target === radar) radarVisible = entry.isIntersecting;
     if (entry.target === chart) chartVisible = entry.isIntersecting;
+    if (entry.target === pulse) pulseVisible = entry.isIntersecting;
   }
   syncMotionLoop();
 });
-chartObserver.observe(radar); chartObserver.observe(chart);
+chartObserver.observe(radar); chartObserver.observe(chart); chartObserver.observe(pulse);
 function motionPreferenceChanged() {
+  document.documentElement.classList.toggle('page-hidden', document.hidden);
   for (const effect of activeEffects) effect.cancel();
   pings = []; previousRadarFrame = 0;
   render(); syncMotionLoop();
@@ -498,7 +565,7 @@ function applyTheme(preference, persist = false) {
   palette = readPalette();
   document.querySelector('meta[name="theme-color"]').content = palette.bg;
   if (persist) { try { localStorage.setItem('hn-radar-theme', themePreference); } catch {} }
-  drawChart(); drawRadar(); syncMotionLoop();
+  drawPulse(); drawChart(); drawRadar(); syncMotionLoop();
 }
 themeSelect.addEventListener('change', () => applyTheme(themeSelect.value, true));
 systemTheme.addEventListener('change', () => { if (themePreference === 'system') applyTheme('system'); });
@@ -506,6 +573,6 @@ window.addEventListener('storage', event => {
   if (event.key === 'hn-radar-theme' || event.key === null) applyTheme(event.newValue || 'system');
 });
 applyTheme(themePreference);
-new ResizeObserver(() => { drawChart(); drawRadar(); }).observe($('.app'));
+new ResizeObserver(() => { drawPulse(); drawChart(); drawRadar(); }).observe($('.app'));
 setInterval(render, 1000);
 render();

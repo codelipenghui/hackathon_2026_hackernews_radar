@@ -44,6 +44,11 @@
     <div class="metric"><strong id="k-profile">—</strong><span>Profile updates</span><small>Last hour</small></div>
   </section>
   <main>
+    <section class="live-pulse" aria-labelledby="pulse-heading">
+      <div class="pulse-heading"><h2 id="pulse-heading">Live activity</h2><p>Events / second · last 60s</p></div>
+      <div class="pulse-plot"><canvas id="pulse" aria-label="Observed events per second over the last 60 seconds"></canvas></div>
+      <div class="pulse-summary"><div><strong id="pulse-count">—</strong><span> events · 60s</span></div><time id="pulse-clock" aria-label="Current local time"></time></div>
+    </section>
     <section class="overview section" id="overview" aria-label="News overview">
       <div class="news">
         <div class="news-toolbar">

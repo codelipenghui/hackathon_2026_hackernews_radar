@@ -182,7 +182,8 @@ producer. It registers the new version on start and refuses to run if the change
 
 - **Front page / Rising**: switch between the current front page and observed stories with the largest point gains. Eight stories appear initially; expand the list to see the rest. Rank changes and point gains use up to 30 minutes of available history.
 - **Radar**: the front-page stories, with #1 nearest the center. Each story has a stable angle; color shifts from sage to orange as it gains points. A scan completes one turn every six seconds, rank changes glide between rings, and fresh vote/comment updates emit a short pulse. Hover for details or click to open the discussion. Squares on the outer band are new submissions received in the last 10 minutes.
-- **Live feed**: recent stories and comments, with their reception time and author.
+- **Live feed**: recent stories and comments, with their relative event age and author; hover the age for the full timestamp.
+- **Live activity**: a continuously advancing 60-second view of observed events, grouped by the producer's timestamp into one-second bins. Empty seconds stay at zero; partial edge seconds and duplicate replays do not inflate the count. The clock and live-feed relative ages advance each second even between batches. Hover a feed timestamp to see the full time.
 - **Activity**: events per minute over the last hour, split by type, with hover details. The current minute is partial. Front-page snapshots are excluded from event counts; other new item types, such as jobs and polls, are shown as Other when present.
 - **Conversation leaders**: observed stories with the largest increase in total comment count, using up to 30 minutes of history.
 - **Front-page sources**: domain counts among the current front-page stories. Text-only posts are grouped as Hacker News; remaining domains are included in the remainder count.
@@ -204,6 +205,10 @@ restart row movement. Charts interpolate to their new values.
 Existing rows retain their DOM nodes and keyboard focus; reading farther back in the live feed
 keeps the visible scroll anchor. Motion respects the system's reduced-motion preference, and the
 continuous radar loop pauses when it is outside the viewport or the page is hidden.
+The connected status gently breathes, and radar points briefly glow as the sweep passes. Newly
+received rows enter in a short stagger (at most 850ms in total), without delaying data ingestion.
+The second-level activity view shares the same visibility-aware animation loop. These visual
+indicators do not generate events, change story scores, or increase database polling frequency.
 
 A new tab rebuilds all of this from the last hour of the view, then checks for new rows every
 2 seconds. RisingWave builds the JSON for each row. Each SSE event id is the event's timestamp, so
