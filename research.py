@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -116,6 +117,23 @@ class Researcher:
                  clock=time.time):
         self.quick, self.deep, self.extract = quick, deep, extract
         self.data_dir, self.cache_delay_s, self.sleep, self.clock = Path(data_dir), cache_delay_s, sleep, clock
+        self.running, self.lock = set(), threading.Lock()
+
+    def _claim(self, key):
+        with self.lock:
+            if key in self.running:
+                return False
+            self.running.add(key)
+            return True
+
+    def _release(self, key):
+        with self.lock:
+            self.running.discard(key)
+
+    @staticmethod
+    def _stamped(out):
+        """Messages carry `at` (wall clock, ms) so the cockpit can tell when research was lost to a restart."""
+        return lambda m: out({**m, "at": int(time.time() * 1000)})
 
     def _cache(self, req, tier):
         return self.data_dir / "verdicts" / f"{req['request_id']}{'.quick' if tier == 'quick' else ''}.json"
@@ -130,6 +148,15 @@ class Researcher:
 
     def handle(self, req, out, schedule_deep):
         """Answer a request with a quick (or news) verdict now; hand earnings to schedule_deep for the deep tier."""
+        key = (req.get("run"), req.get("request_id"), "handle")
+        if not self._claim(key):
+            return  # the same request is already being answered (a repeated press)
+        try:
+            self._handle(req, self._stamped(out), schedule_deep)
+        finally:
+            self._release(key)
+
+    def _handle(self, req, out, schedule_deep):
         base = {k: req.get(k) for k in ("run", "ts", "request_id", "ticker", "skill")}
         try:
             check_request(req)
@@ -170,6 +197,15 @@ class Researcher:
 
     def deep_job(self, req, out):
         """ai-berkshire /earnings-review; its verdict replaces the quick one."""
+        key = (req.get("run"), req.get("request_id"), "deep")
+        if not self._claim(key):
+            return
+        try:
+            self._deep_job(req, self._stamped(out))
+        finally:
+            self._release(key)
+
+    def _deep_job(self, req, out):
         base = {k: req.get(k) for k in ("run", "ts", "request_id", "ticker", "skill")} | {"tier": "deep"}
         out({**base, "status": "started"})
         started = self.clock()

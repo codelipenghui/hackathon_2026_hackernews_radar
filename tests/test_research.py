@@ -216,3 +216,22 @@ def test_newest_report_is_found_in_subfolders(tmp_path):
     os.utime(new, (3000, 3000))
     assert newest_report(tmp_path, since=2000) == new
     assert newest_report(tmp_path, since=4000) is None
+
+
+def test_the_same_job_is_not_started_twice_while_running(tmp_path):
+    inner = []
+
+    class Reentrant(Fake):
+        def quick(self, prompt, stdin=None):
+            r.handle({**REQ, "run": "live"}, inner.append, lambda _: None)  # a duplicate request arrives meanwhile
+            return json.dumps(GOOD)
+    r = make(tmp_path, Reentrant())
+    out, _ = run(r, {**REQ, "run": "live"})
+    assert statuses(out) == [("quick", "started"), ("quick", "done")] and inner == []
+    out2, _ = run(r, {**REQ, "run": "live"})       # once finished, a new press runs again
+    assert statuses(out2)[0] == ("quick", "started")
+
+
+def test_messages_carry_wall_clock_time(tmp_path):
+    out, _ = run(make(tmp_path, Fake(quick=json.dumps(GOOD))), {**REQ, "run": "live"})
+    assert all(isinstance(m["at"], int) and m["at"] > 1_700_000_000_000 for m in out)

@@ -49,3 +49,12 @@ def test_on_demand_research_bypasses_the_per_ticker_limit_but_not_the_same_filin
     other = {**F, "run": "live", "accession": "0000723125-25-000099", "on_demand": True}
     assert r.on_filing(other)["request_id"] == "MU-0000723125-25-000099"
     assert r.on_filing(other) is None
+
+
+def test_research_now_can_be_pressed_again_after_a_minute():
+    clock = iter([0, 30, 61]).__next__
+    r = Router(WATCH, clock=clock)
+    press = {**F, "run": "live", "on_demand": True}
+    assert r.on_filing(press)
+    assert r.on_filing(press) is None          # double-click
+    assert r.on_filing(press)                  # a minute later: e.g. research.py was restarted and missed it

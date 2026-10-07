@@ -96,6 +96,7 @@ const et = ts => new Date(ts).toLocaleString('en-US', {timeZone: 'America/New_Yo
   hour: '2-digit', minute: '2-digit', hour12: false}) + ' ET';
 const TOPICS = 'filings,ticks,news,hn-events,skill-requests,research-verdicts,news-triage,orders,fills,pnl';
 const TIER = {quick: '⚡ quick', deep: '🔬 deep', news: '📰 news'};
+const LIMIT_MS = {quick: 6 * 60e3, news: 6 * 60e3, deep: 50 * 60e3};  // research.py's time limits, plus slack
 const CASH0 = 100000;
 
 let watch = {};
@@ -145,7 +146,7 @@ function ingest(m) {
     case 'research-verdicts': {
       m.tier = m.tier || 'deep';  // verdicts from before tiers existed were all /earnings-review
       const tier = TIER[m.tier] || m.tier;
-      if (m.status === 'started') { S.running.set(m.tier, {...m, wall: Date.now()}); S.events.push([m.ts, '🔬', `${tier} research started`]); break; }
+      if (m.status === 'started') { S.running.set(m.tier, m); S.events.push([m.ts, '', `${tier} research started`]); break; }
       S.running.delete(m.tier);
       if (m.status === 'done') { S.verdict = m; S.failed = null; S.events.push([m.ts, '⚖️', `${tier} verdict ${m.verdict} ${m.score}/5 · buy ${usd(m.buy_low)}–${usd(m.buy_high)} · ${m.source}`]); }
       else { S.failed = m; S.events.push([m.ts, '⚠️', `${tier} research failed: ${m.error || ''}`]); }
@@ -312,7 +313,8 @@ function drawChart() {
 function renderResearch() {
   const v = S.verdict;
   const clock = w => { const s = Math.round((Date.now() - w) / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
-  const running = [...S.running.values()].map(r => `<div class="dim" style="margin-top:6px">${esc(TIER[r.tier] || r.tier)} research on ${esc(r.ticker)} running… <span class="num">${clock(r.wall)}</span>${
+  // `at` is when research.py started it; anything past its time limit was lost (e.g. research.py restarted)
+  const running = [...S.running.values()].filter(r => r.at && Date.now() - r.at < (LIMIT_MS[r.tier] || 6e5)).map(r => `<div class="dim" style="margin-top:6px">${esc(TIER[r.tier] || r.tier)} research on ${esc(r.ticker)} running… <span class="num">${clock(r.at)}</span>${
     r.tier === 'deep' ? ' · ai-berkshire /earnings-review, 10–30 min; replaces the verdict when done' : ''}</div>`).join('');
   const failed = S.failed ? `<div class="down" style="margin-top:6px">${esc(TIER[S.failed.tier] || S.failed.tier)} research failed <span class="dim">${esc(S.failed.error)}</span></div>` : '';
   if (v) {
@@ -325,7 +327,7 @@ function renderResearch() {
       <div>${esc(v.summary)}</div>
       ${v.red_lines.length ? `<div class="dim" style="margin-top:6px">Red lines: ${v.red_lines.map(esc).join(' · ')}</div>` : ''}
       ${v.report_path ? `<div class="dim" style="margin-top:6px">${esc(v.report_path)}</div>` : ''}${running}${failed}`);
-  } else if (S.running.size || S.failed) {
+  } else if (running || failed) {
     html('#rsrc', ''); html('#research', `<div>Buffett · Munger · Duan Yongping · Li Lu are reading the filing</div>${running}${failed}`);
   } else if (S.requested) {
     const r = S.requested;
