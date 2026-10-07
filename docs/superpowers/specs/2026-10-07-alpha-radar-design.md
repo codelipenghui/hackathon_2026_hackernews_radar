@@ -41,7 +41,7 @@ S1 Haiku headline classifier on news and HN titles · S2 live price feed during 
                                         dashboard.py: all topics ─SSE─▶ cockpit.html (+ existing radar)
 ```
 
-- **Kafka is the system of record.** Every service is a consumer → logic → producer. State is in memory and rebuilt by replaying topics from the start of the current run, so restarting any service during the demo is safe. A run's start is found with Kafka's `offsets_for_times` (record timestamps are produce time): for `replay-<unix-seconds>`, seek to that second; for `live`, seek to now − 1 hour.
+- **Kafka is the system of record.** Every service is a consumer → logic → producer. State is in memory. The dashboard rebuilds its view by reading topics from the start of the selected run; the router, trader and research services start from the end of their topics (see §5). A run's start is found with Kafka's `offsets_for_times` (record timestamps are produce time): for `replay-<unix-seconds>`, seek to that second; for `live`, seek to now − 1 hour.
 - **Run isolation:** every message carries `run`. Live data uses `run: "live"`. Each replay uses `run: "replay-<unix-seconds>"`. Every stateful service keys its state by `run`, and the dashboard shows one run at a time (a dropdown). This lets live HN and a replayed earnings day share topics without mixing.
 - **Time:** every message carries `ts` = **event time** in epoch ms (for a replay, the original historical time). Logic uses `ts`, never the wall clock, so the rules behave identically at 1× and 60× replay speed.
 
@@ -158,10 +158,10 @@ keeps entries whose CIK is in the watchlist, parses item numbers from the entry 
 
 **`record.py <TICKER> <ACCESSION>`** — builds `data/replays/<TICKER>-<date>.jsonl`, one JSON message per line, sorted by `ts`, with `"run"` left blank:
 1. the `filings` message, from `https://data.sec.gov/submissions/CIK##########.json` (the `items` field holds `2.02`);
-2. `ticks` from `yfinance` 5-minute bars with `prepost=True`, covering the filing day's after-hours session and the next full trading day (yfinance keeps about 60 days of 5-minute bars);
+2. `ticks` from `yfinance` 5-minute bars with `prepost=True`, trimmed to keep the demo short: from 30 min before the filing to 2 h after it, plus 08:00–16:00 ET of the first regular session after the filing (about 130 bars; yfinance keeps about 60 days of 5-minute bars);
 3. `news` headlines for that window, written by hand (2–4 lines, real headlines and URLs) — at least one negative headline after the entry, to drive the demo's "bad news" moment.
 
-**`replay.py <file> [--speed 60]`** — assigns `run = "replay-<now>"`, then emits each line to its topic, sleeping `(ts_next − ts) / speed` between messages (capped at 5 s, so overnight gaps don't stall the demo). Also exposed via `POST /replay` on the dashboard.
+**`replay.py <file> [--speed 300]`** (300× ≈ 1 s per 5-minute bar, so a recorded day plays in about 2 minutes) — assigns `run = "replay-<now>"`, then emits each line to its topic, sleeping `(ts_next − ts) / speed` between messages (capped at 5 s, so overnight gaps don't stall the demo). Also exposed via `POST /replay` on the dashboard.
 
 **Demo ticker choice (hour 1):** a watchlist company with an 8-K Item 2.02 in the last 60 days and a post-earnings move of ≥5%. Late-September reporters such as **MU** are candidates to verify. Record **two** days, so there's a backup.
 
@@ -174,7 +174,7 @@ keeps entries whose CIK is in the watchlist, parses item numbers from the entry 
 | R1 | `filings`: watchlist ticker, 8-K containing item `2.02`, or form `10-Q`/`10-K` | `earnings-review` | `"<TICKER> latest"` |
 | R2 (stretch S3) | HN: ≥3 front-page or new stories mentioning a ticker within 30 min | `news-pulse` | `"<TICKER> 7d"` |
 
-Guards: dedupe on `request_id` (`<TICKER>-<accession>`); at most **2** research runs at a time across all runs; at most **1** per ticker per `run`.
+Guards: at most **1** request per ticker per `run` (this also dedupes `request_id` = `<TICKER>-<accession>` within a run; a new replay of the same filing triggers again and hits the cache). `research.py` runs at most **2** research jobs at a time (a 2-worker pool), since it is the service that knows when one finishes.
 
 **`research.py`** — runs on a team laptop where Claude Code is logged in and ai-berkshire is cloned and its commands are installed (`scripts/install-claude-commands.sh`). For each `skill-requests` message:
 
@@ -212,7 +212,7 @@ In the 1-day build only replays carry `ticks` (live prices are stretch S2), so t
 
 **Paper broker:** fills every order on the **same tick** that caused it, at `price × (1 ± 0.0005)` (5 bps slippage, worse for the trader). Emits `fills`, updates cash and positions.
 
-**Scorer:** after each fill and at most once per ticker bar, emits `pnl` with cash, equity, realized and unrealized P&L, and per-position stop. Also logs a buy-and-hold benchmark from the first post-filing tick to compare against on the dashboard.
+**Scorer:** after each fill and at most once per ticker bar, emits `pnl` with cash, equity, realized and unrealized P&L, and per-position stop. The buy-and-hold benchmark (from the first tick after the filing) is computed in the cockpit from `ticks`, next to the strategy's return.
 
 ### 4.4 Dashboard (Person C) — `dashboard.py` + `cockpit.html`
 
@@ -222,7 +222,7 @@ In the 1-day build only replays carry `ticks` (live prices are stretch S2), so t
 - `GET /` → `cockpit.html`; `GET /radar` → the existing `index.html` unchanged.
 
 **`cockpit.html` panels:**
-1. **Run selector** (runs seen in the last 6 hours) **+ "Replay earnings day" button**, with speed.
+1. **Run selector** (`live` plus replays started from this dashboard, newest first) **+ "Replay earnings day" button**, with speed.
 2. **Price chart** (canvas, like the existing radar code): price line, buy band shaded, pivot line, stop line, trade markers. Hovering a marker shows `rule` and `reason`.
 3. **Research card:** `started` → "🔬 4 masters researching MU… 2:41"; `done` → verdict badge, score, four master scores, band, target, red lines, summary, link to the report, and `live`/`cache` source.
 4. **Decision timeline:** filing → research started → verdict → each order/fill, with the source topic and timestamp of each.
@@ -237,7 +237,7 @@ In the 1-day build only replays carry `ticks` (live prices are stretch S2), so t
 | Live research slow, failing, or Claude login problem | Cache fallback (4.2 step 6); the card shows `source: cache`. A replay never depends on a live research run. |
 | yfinance / EDGAR / RSS down on demo day | Replays use only committed `data/replays/*.jsonl`; live sources just log and retry every 60 s. |
 | Verdict JSON invalid | Retry extraction once; then `failed`, and the trader never opens a position. |
-| A service crashes mid-demo | `restart: unless-stopped`; on start, each consumer reads its topics from the beginning of the current run and rebuilds state. |
+| A service crashes mid-demo | `restart: unless-stopped`. Router, trader and research start from the end of their topics (rebuilding would re-send duplicate orders), so after a restart **press Replay again** (a new run). The dashboard rebuilds its view from the run's start, so reloading a tab is always safe. |
 | Two people press "Replay" | Each press is a new `run`; the dashboard follows the newest unless one is pinned. |
 | Market closed during the demo | Not an issue: replays carry their own historical time. |
 
@@ -250,7 +250,7 @@ Small and focused; no time for more in a single day.
   - `router`: R1 matches 8-K with 2.02 and ignores 8-K without it; dedupe; concurrency cap.
   - `research`: verdict validation accepts the example in §3 and rejects missing/invalid fields.
   - `edgar`: item parsing from a saved Atom entry.
-- **Contract fixtures:** `tests/fixtures/<topic>.json` holds the examples in §3. Each person's service has a test that consumes or produces exactly these. These are also the fake messages used from hour 1 to hour 6.
+- **Contract fixtures:** `tests/fixtures/contracts.json` holds the examples in §3, keyed by topic. Each person's service has a test that consumes or produces exactly these. These are also the fake messages used from hour 1 to hour 6.
 - **End-to-end (integration hour):** `replay.py data/replays/<demo>.jsonl --speed 600` with a cached verdict must produce ≥1 `BUY` fill, one exit, and a final `pnl` with zero open positions. Run it after every merge from 6:00 onwards.
 
 ## 7. Plan for the day
@@ -266,7 +266,7 @@ Small and focused; no time for more in a single day.
 ## 8. Demo script (about 3 minutes)
 
 1. Open `/radar`: HN flowing live — "this pipeline is real time, 24/7".
-2. Switch to the cockpit, press **Replay earnings day** (60×). The 8-K Item 2.02 filing appears in the timeline.
+2. Switch to the cockpit, press **Replay earnings day** (300×). The 8-K Item 2.02 filing appears in the timeline.
 3. Research card: "🔬 4 masters researching MU…". Explain: ai-berkshire, started by the event.
 4. Verdict lands: PASS 4.3/5, buy band shown on the chart.
 5. Next morning in the replay: the price breaks the 30-minute pivot on high volume → **BUY** marker: "Livermore pivot · Turtle 1% risk · Berkshire PASS 4.3".
