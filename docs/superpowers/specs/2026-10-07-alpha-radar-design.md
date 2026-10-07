@@ -278,3 +278,41 @@ Small and focused; no time for more in a single day.
 - The demo ticker and the backup ticker (criteria in §4.1).
 - Whose laptop runs `research.py` with Claude Code and ai-berkshire installed.
 - The team email for the SEC `User-Agent`.
+
+## 10. Addendum (2026-10-07, after first demo run)
+
+Agreed with the user after seeing the live cockpit. Supersedes earlier sections where they conflict.
+
+### 10.1 Live mode
+- `prices.py` publishes yfinance 5-minute bars for the watchlist to `ticks` (`run: "live"`), each completed bar once; the
+  first poll sends the current/last session. Live view keeps 24 h of market data (HN stays at 1 h).
+- `POST /research?ticker=T` ("Research now") publishes T's latest earnings 8-K to `filings` with `on_demand: true`;
+  the router allows it once per filing.
+
+### 10.2 Two research tiers
+`/earnings-review` takes 10–30+ minutes, too slow to trade on. Every earnings request now yields two verdicts, both
+on `research-verdicts`, distinguished by a new required field `tier`:
+- `quick` — one Claude session (Sonnet, WebSearch/WebFetch only, ≤5 min) applying the four masters to the filing and
+  returning the verdict JSON directly. Tradeable; cached as `data/verdicts/<request_id>.quick.json`.
+- `deep` — `/earnings-review` in the background (one at a time, ≤45 min), told to wait for its agents and write the
+  report; reports are found recursively under ai-berkshire's `reports/`. Replaces the quick verdict when done;
+  cached as `data/verdicts/<request_id>.json`.
+Replays use the deep cache if present, else the quick cache, else run quick live; a missing deep verdict is scheduled.
+
+### 10.3 News-triggered re-verdict
+- `triage.py` (host, next to `research.py`) reads `news`, `hn-events` and `research-verdicts`. A headline about a
+  ticker that has a `done` verdict in that run (and no research running, and no re-check in the last 30 min of event
+  time) is classified by Claude Haiku with no tools: `{material, direction, reason}`. Every decision goes to a new
+  topic `news-triage`; material ones also publish a `skill-requests` message:
+  `skill: "news-recheck"`, `args: "<T> 3d"`, `request_id: "<T>-news-<8 hex>"`, `prior: <current verdict fields>`.
+- `research.py` runs a quick-tier re-check (`tier: "news"`): it searches recent news itself (the headline is never put
+  in a prompt that has tools) and returns the updated verdict (same schema), given the prior verdict on stdin.
+- Trader: a news verdict is a verdict. FAIL sells (`thesis_fail`), GRAY holds and blocks new entries, PASS with a new
+  band changes future entries.
+
+### 10.4 Cockpit
+- **Live | Replay** switch. Live: ticker, range (1D/5D/1M), Research now. Replay: recorded day, speed, ▶, run picker.
+- 1D = the 5-minute stream; 5D (15-minute bars) and 1M (daily bars) come from `GET /history?ticker=T&range=5d|1mo`
+  (yfinance, cached 60 s), overlays drawn by time. Price axis on the left, last-price tag on the right.
+- Research card shows the current verdict with its tier (⚡ quick / 🔬 deep / 📰 news) and what is still running;
+  the timeline shows `news-triage` decisions.
