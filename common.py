@@ -41,15 +41,21 @@ def now_ms():
     return int(time.time() * 1000)
 
 
+_last_run = ["", 0]  # (base id, how many runs started in that second)
+
+
 def new_replay_run():
-    return f"replay-{int(time.time())}"
+    """replay-<unix seconds>; a second run in the same second (a double-click) gets -2, -3, ..."""
+    base = f"replay-{int(time.time())}"
+    _last_run[:] = [base, _last_run[1] + 1 if _last_run[0] == base else 1]
+    return base if _last_run[1] == 1 else f"{base}-{_last_run[1]}"
 
 
 def run_start_ms(run, now=None):
     """Where a run begins in Kafka (record timestamps are produce time): a replay starts at the second in its id,
     live shows the last hour."""
     if run.startswith("replay-"):
-        return int(run.split("-", 1)[1]) * 1000
+        return int(run.split("-")[1]) * 1000
     return (now_ms() if now is None else now) - HOUR_MS
 
 

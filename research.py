@@ -9,6 +9,7 @@ The skill's free-text report (often in Chinese) is turned into JSON by a second,
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -22,6 +23,10 @@ CACHE_DELAY_S = float(os.environ.get("CACHE_DELAY_S", 20))
 VERDICTS = {"PASS", "GRAY", "FAIL"}
 MASTERS = ("buffett", "munger", "duan", "lilu")
 FIELDS = ("verdict", "score", "masters", "buy_low", "buy_high", "target", "red_lines", "summary")
+# requests reach Claude (with Bash allowed) and name files on disk, so only the router's exact shape gets through
+SKILLS = {"earnings-review"}
+ARGS = re.compile(r"[A-Z.]{1,6} earnings filed \d{4}-\d{2}-\d{2}")
+REQUEST_ID = re.compile(r"[A-Z.]{1,6}-\d{10}-\d{2}-\d{6}")
 
 
 def _num(x):
@@ -29,10 +34,26 @@ def _num(x):
 
 
 def extract_json(text):
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError("no JSON object in model output")
-    return json.loads(text[start:end + 1])  # JSONDecodeError is a ValueError
+    """The first JSON object in text; models wrap it in prose, fences, or stray {braces}."""
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch == "{":
+            try:
+                obj, _ = decoder.raw_decode(text, i)
+            except ValueError:
+                continue
+            if isinstance(obj, dict):
+                return obj
+    raise ValueError("no JSON object in model output")
+
+
+def check_request(req):
+    if req.get("skill") not in SKILLS:
+        raise ValueError(f"skill not allowed: {req.get('skill')!r}")
+    if not ARGS.fullmatch(str(req.get("args", ""))):
+        raise ValueError(f"unexpected args: {str(req.get('args'))[:80]!r}")
+    if not REQUEST_ID.fullmatch(str(req.get("request_id", ""))):
+        raise ValueError(f"unexpected request_id: {str(req.get('request_id'))[:80]!r}")
 
 
 def validate_verdict(d):
@@ -54,7 +75,7 @@ def validate_verdict(d):
         raise ValueError("red_lines must be a list of strings")
     if not isinstance(d.get("summary"), str):
         raise ValueError("summary must be a string")
-    return {k: d[k] for k in FIELDS}
+    return {k: d.get(k) for k in FIELDS}
 
 
 class Researcher:
@@ -62,25 +83,41 @@ class Researcher:
         self.run_skill, self.extract = run_skill, extract
         self.data_dir, self.cache_delay_s, self.sleep, self.clock = Path(data_dir), cache_delay_s, sleep, clock
 
+    def cache_file(self, req):
+        return self.data_dir / "verdicts" / f"{req['request_id']}.json"
+
+    def is_cached(self, req):
+        """Replays with a cached verdict are served at once, never queued behind a live run."""
+        try:
+            check_request(req)
+        except ValueError:
+            return False
+        return req["run"] != LIVE and self.cache_file(req).exists()
+
     def handle(self, req, out):
-        base = {k: req[k] for k in ("run", "ts", "request_id", "ticker", "skill")}
+        base = {k: req.get(k) for k in ("run", "ts", "request_id", "ticker", "skill")}
+        try:
+            check_request(req)
+        except ValueError as e:
+            print(f"research: rejected request: {e}")
+            return out({**base, "status": "failed", "error": f"rejected: {e}"})
         out({**base, "status": "started"})
-        cache = self.data_dir / "verdicts" / f"{req['request_id']}.json"
+        cache = self.cache_file(req)
         if req["run"] != LIVE and cache.exists():
             self.sleep(self.cache_delay_s)
             return out({**base, **json.loads(cache.read_text()), "status": "done", "source": "cache"})
         started = self.clock()
+        report_path = self.data_dir / "reports" / f"{req['request_id']}.md"
         try:
             report = self.run_skill(req["skill"], req["args"])
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(report)  # keep the minutes-long research even if extraction fails
             verdict = self._verdict(report)
         except Exception as e:
             print(f"research {req['request_id']}: {e!r}")
             if cache.exists():
                 return out({**base, **json.loads(cache.read_text()), "status": "done", "source": "cache"})
             return out({**base, "status": "failed", "error": repr(e)[:300]})
-        report_path = self.data_dir / "reports" / f"{req['request_id']}.md"
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(report)
         saved = {**verdict, "report_path": str(report_path.relative_to(self.data_dir.parent)),
                  "duration_s": round(self.clock() - started)}
         cache.parent.mkdir(parents=True, exist_ok=True)
@@ -96,7 +133,7 @@ class Researcher:
 
 BERKSHIRE_DIR = Path(os.environ.get("BERKSHIRE_DIR", Path.home() / "ai-berkshire"))
 SKILL_TIMEOUT_S = 600
-MAX_PARALLEL = 2
+MAX_PARALLEL = 2  # spec cap; live runs use 1 worker since a run finds its report by mtime in reports/
 TOOLS = "WebSearch,WebFetch,Read,Write,Bash,Task,Agent"
 EXTRACT_PROMPT = """The text on stdin is an investment research report (it may be in Chinese).
 Return ONLY a JSON object, no prose, with exactly these keys:
@@ -141,7 +178,8 @@ def warm(ticker, accession):
 
 def main():
     prod, researcher = producer(), Researcher(run_skill_cli, extract_cli)
-    pool = ThreadPoolExecutor(MAX_PARALLEL)  # at most 2 deep-research runs at a time
+    live_pool = ThreadPoolExecutor(1)              # one live run at a time: reports are matched by mtime
+    cache_pool = ThreadPoolExecutor(MAX_PARALLEL)  # cache hits never wait behind a 10-minute live run
 
     def out(msg):
         emit(prod, "research-verdicts", msg["ticker"], msg)
@@ -156,7 +194,7 @@ def main():
 
     print(f"research: ai-berkshire at {BERKSHIRE_DIR}, waiting for skill-requests")
     for _, req in consume(["skill-requests"]):
-        pool.submit(job, req)
+        (cache_pool if researcher.is_cached(req) else live_pool).submit(job, req)
 
 
 if __name__ == "__main__":

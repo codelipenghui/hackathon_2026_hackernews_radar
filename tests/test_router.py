@@ -2,15 +2,15 @@ from common import missing_keys
 from router import Router
 
 WATCH = {"MU": {"cik": "0000723125", "names": ["Micron"]}}
-F = {"run": "replay-1", "ts": 1, "ticker": "MU", "cik": "0000723125", "form": "8-K",
-     "items": ["2.02", "9.01"], "accession": "acc-1", "url": "u", "title": "t"}
+F = {"run": "replay-1", "ts": 1758657912000, "ticker": "MU", "cik": "0000723125", "form": "8-K",
+     "items": ["2.02", "9.01"], "accession": "0000723125-25-000041", "url": "u", "title": "t"}
 
 
 def test_earnings_8k_triggers_earnings_review():
     req = Router(WATCH).on_filing(F)
-    assert req == {"run": "replay-1", "ts": 1, "request_id": "MU-acc-1", "ticker": "MU",
-                   "skill": "earnings-review", "args": "MU latest", "reason": "8-K Item 2.02",
-                   "trigger": {"topic": "filings", "accession": "acc-1"}}
+    assert req == {"run": "replay-1", "ts": 1758657912000, "request_id": "MU-0000723125-25-000041", "ticker": "MU",
+                   "skill": "earnings-review", "args": "MU earnings filed 2025-09-23", "reason": "8-K Item 2.02",
+                   "trigger": {"topic": "filings", "accession": "0000723125-25-000041"}}
     assert missing_keys("skill-requests", req) == set()
 
 
@@ -35,4 +35,9 @@ def test_one_request_per_ticker_per_run():
 def test_replaying_the_same_filing_in_a_new_run_triggers_again():
     r = Router(WATCH)
     r.on_filing(F)
-    assert r.on_filing({**F, "run": "replay-2"})["request_id"] == "MU-acc-1"
+    assert r.on_filing({**F, "run": "replay-2"})["request_id"] == "MU-0000723125-25-000041"
+
+
+def test_research_is_anchored_to_the_filing_date_not_today():
+    # a replay of an August filing must be priced with August information, not "latest" (October) data
+    assert Router(WATCH).on_filing({**F, "ts": 1787775679000})["args"] == "MU earnings filed 2026-08-26"

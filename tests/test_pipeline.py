@@ -11,16 +11,16 @@ from trader import Trader
 WATCH = {"MU": {"cik": "0000723125", "names": ["Micron"]}}
 T0 = 1_000_000_000_000
 FILING = {"run": "", "ts": T0, "ticker": "MU", "cik": "0000723125", "form": "8-K", "items": ["2.02", "9.01"],
-          "accession": "acc-1", "url": "u", "title": "MICRON TECHNOLOGY INC - 8-K"}
+          "accession": "0000723125-25-000041", "url": "u", "title": "MICRON TECHNOLOGY INC - 8-K"}
 VERDICT = {"verdict": "PASS", "score": 4.3, "masters": {"buffett": 4.4, "munger": 3.5, "duan": 3.7, "lilu": 4.0},
            "buy_low": 140.0, "buy_high": 160.0, "target": 170.0, "red_lines": [], "summary": "s",
-           "report_path": "data/reports/MU-acc-1.md", "duration_s": 300}
+           "report_path": "data/reports/MU-0000723125-25-000041.md", "duration_s": 300}
 PRICES = [(130, 1000), (134, 1000), (138, 1000), (142, 1000), (146, 1000), (150, 1000),
           (154, 2000), (160, 1000), (170, 1000), (171, 1000)]
 
 
 def test_recorded_day_flows_from_filing_to_realized_pnl(tmp_path):
-    cache = tmp_path / "data" / "verdicts" / "MU-acc-1.json"
+    cache = tmp_path / "data" / "verdicts" / "MU-0000723125-25-000041.json"
     cache.parent.mkdir(parents=True)
     cache.write_text(json.dumps(VERDICT))
     lines = [{"topic": "filings", "msg": FILING}] + [

@@ -34,6 +34,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 On a python.org Python for macOS, HTTPS calls (SEC, yfinance, RSS) fail with `CERTIFICATE_VERIFY_FAILED` until you
 run `export SSL_CERT_FILE=$(.venv/bin/python -m certifi)` (or the installer's "Install Certificates.command").
 
+Kafka listens on `127.0.0.1:9092` only (it has no auth, and `research.py` hands requests to Claude), so run
+`research.py` on the machine that runs Docker.
+
 Paper trading only. Not investment advice.
 
 ---

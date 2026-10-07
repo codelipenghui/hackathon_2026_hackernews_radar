@@ -2,7 +2,7 @@ services:
   kafka:
     image: apache/kafka:4.1.0
     restart: unless-stopped
-    ports: ["9092:9092"]
+    ports: ["127.0.0.1:9092:9092"]  # PLAINTEXT, no auth: keep it off the venue network
     environment:
       # single-node KRaft (broker + controller in one process, no ZooKeeper)
       KAFKA_NODE_ID: 1

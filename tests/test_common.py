@@ -43,3 +43,11 @@ def test_repo_watchlist_is_well_formed():
         assert ticker.isupper()
         assert len(info["cik"]) == 10 and info["cik"].isdigit()
         assert info["names"]
+
+
+def test_runs_started_in_the_same_second_get_distinct_ids(monkeypatch):
+    import common
+    monkeypatch.setattr(common.time, "time", lambda: 1759840000.4)
+    first, second = common.new_replay_run(), common.new_replay_run()
+    assert first == "replay-1759840000" and second == "replay-1759840000-2"
+    assert run_start_ms(second) == 1759840000000

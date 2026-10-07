@@ -146,7 +146,9 @@ async function loadRuns(selected) {
 }
 $('#run').onchange = e => connect(e.target.value);
 $('#go').onclick = async () => {
-  const resp = await fetch(`replay?file=${encodeURIComponent($('#file').value)}&speed=${$('#speed').value}`, {method: 'POST'});
+  $('#go').disabled = true;  // a double-click must not start two replays
+  const resp = await fetch(`replay?file=${encodeURIComponent($('#file').value)}&speed=${$('#speed').value}`, {method: 'POST'})
+    .finally(() => setTimeout(() => $('#go').disabled = false, 1500));
   if (!resp.ok) return alert('Replay failed: ' + resp.status + ' (is there a file in data/replays?)');
   const {run} = await resp.json();
   await loadRuns(run);
