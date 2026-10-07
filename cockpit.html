@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alpha Radar</title>
+<style>
+  :root {
+    --bg: #070b10; --panel: #0c131bcc; --line: #1a2531; --text: #d3dce6; --dim: #6f8296;
+    --buy: #3ddc84; --sell: #ff5c6c; --pivot: #ffd166; --accent: #4da3ff; --gray: #b48cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; color: var(--text);
+    background: radial-gradient(ellipse at 15% -20%, #102331, var(--bg) 60%) fixed;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  a { color: inherit; } .dim { color: var(--dim); }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+  .logo { font-weight: 700; letter-spacing: .22em; }
+  .logo b { display: inline-block; width: 22px; margin-right: 10px; background: var(--buy); color: #04110a; text-align: center; letter-spacing: 0; }
+  select, button { font: inherit; color: var(--text); background: #0c131b; border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; }
+  button { border-color: var(--buy); color: var(--buy); cursor: pointer; }
+  #status { margin-left: auto; color: var(--dim); }
+  #status i { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--sell); }
+  #status.live i { background: var(--buy); box-shadow: 0 0 10px var(--buy); }
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.6fr 1fr; grid-template-rows: 1.3fr 1fr; gap: 12px; padding: 12px 18px 18px; }
+  .panel { min-height: 0; display: flex; flex-direction: column; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  h2 { display: flex; gap: 10px; margin: 0 0 8px; color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
+  h2 small { margin-left: auto; font-weight: 400; letter-spacing: 0; text-transform: none; }
+  .canvas { position: relative; flex: 1; min-height: 160px; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  ol, ul { flex: 1; min-height: 0; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+  li { padding: 3px 6px; border-radius: 4px; }
+  li:hover { background: #ffffff0a; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 4px; font-weight: 700; color: #04110a; }
+  .PASS { background: var(--buy); } .GRAY { background: var(--gray); } .FAIL { background: var(--sell); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 8px 0; }
+  .num { font-variant-numeric: tabular-nums; }
+  .up { color: var(--buy); } .down { color: var(--sell); }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; grid-template-rows: none; } }
+</style>
+</head>
+<body>
+<header>
+  <span class="logo"><b>α</b>ALPHA RADAR</span>
+  <label class="dim">run <select id="run"></select></label>
+  <label class="dim">day <select id="file"></select></label>
+  <label class="dim">speed <select id="speed"><option>300</option><option>600</option><option>60</option></select>×</label>
+  <button id="go">▶ Replay earnings day</button>
+  <a href="radar" target="_blank" class="dim">HN radar ↗</a>
+  <span id="status"><i></i><b id="state">CONNECTING</b></span>
+</header>
+<main>
+  <section class="panel">
+    <h2>Price <small id="tk"></small></h2>
+    <div class="canvas"><canvas id="chart"></canvas></div>
+    <p class="dim" style="margin:6px 0 0;font-size:11px">green band = Berkshire buy range · yellow = 30-min pivot (Livermore) · red = 2N stop (Turtle) · ▲ buy ▼ sell</p>
+  </section>
+  <section class="panel">
+    <h2>Research · ai-berkshire <small id="rsrc"></small></h2>
+    <div id="research" class="dim">Waiting for an earnings filing…</div>
+  </section>
+  <section class="panel">
+    <h2>Decision timeline</h2>
+    <ol id="timeline"></ol>
+  </section>
+  <section class="panel">
+    <h2>P&amp;L <small id="bh"></small></h2>
+    <div id="pnl" class="num"></div>
+    <h2 style="margin-top:10px">News · HN mentions</h2>
+    <ul id="news"></ul>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+const usd = x => x == null ? '–' : '$' + Number(x).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const pct = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(2) + '%';
+const et = ts => new Date(ts).toLocaleString('en-US', {timeZone: 'America/New_York', month: 'short', day: 'numeric',
+  hour: '2-digit', minute: '2-digit', hour12: false}) + ' ET';
+const TOPICS = 'filings,ticks,news,hn-events,skill-requests,research-verdicts,orders,fills,pnl';
+const CASH0 = 100000;
+
+let watch = {};
+fetch('watchlist.json').then(r => r.json()).then(w => watch = w);
+const reEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const mentions = title => Object.entries(watch)
+  .filter(([, w]) => w.names.concat(w.aliases || []).some(n => new RegExp(`\\b${reEsc(n)}\\b`).test(title)))
+  .map(([t]) => t);
+
+// ---- state for the selected run, rebuilt from Kafka on every (re)connect ----
+let S, es;
+function reset() {
+  S = {filing: null, ticks: [], started: null, verdict: null, orders: new Map(), fills: [], pnl: null, news: [], events: []};
+}
+
+function ingest(m) {
+  switch (m.topic) {
+    case 'filings':
+      S.filing = m;
+      S.ticks = S.ticks.filter(t => t.ticker === m.ticker);
+      S.events.push([m.ts, '📄', `${m.ticker} filed ${m.form}${m.items.length ? ' · items ' + m.items.join(', ') : ''}`, m.url]);
+      break;
+    case 'ticks':
+      if (!S.filing || m.ticker === S.filing.ticker) S.ticks.push(m);
+      break;
+    case 'news':
+      if (m.ticker !== '_') S.news.unshift({ts: m.ts, src: m.source, tk: m.ticker, text: m.headline, url: m.url});
+      break;
+    case 'hn-events': {
+      const it = m.item;
+      if (m.kind === 'new' && it?.type === 'story' && it.title)
+        for (const tk of mentions(it.title))
+          S.news.unshift({ts: m.ts, src: 'HN', tk, text: it.title, url: `https://news.ycombinator.com/item?id=${it.id}`});
+      break;
+    }
+    case 'skill-requests':
+      S.events.push([m.ts, '⚡', `router: ${m.reason} → /${m.skill} ${m.args}`]);
+      break;
+    case 'research-verdicts':
+      if (m.status === 'started') { S.started = {...m, wall: Date.now()}; S.verdict = null; S.events.push([m.ts, '🔬', `ai-berkshire /${m.skill} started`]); }
+      else if (m.status === 'done') { S.verdict = m; S.events.push([m.ts, '⚖️', `verdict ${m.verdict} ${m.score}/5 · buy ${usd(m.buy_low)}–${usd(m.buy_high)} · ${m.source}`]); }
+      else { S.verdict = m; S.events.push([m.ts, '⚠️', `research failed: ${m.error || ''}`]); }
+      break;
+    case 'orders': S.orders.set(m.order_id, m); break;
+    case 'fills': S.fills.push(m); break;
+    case 'pnl': S.pnl = m; break;
+  }
+  if (S.news.length > 100) S.news.length = 100;
+}
+
+function connect(run) {
+  es?.close();
+  reset();
+  es = new EventSource(`events?topics=${TOPICS}&run=${encodeURIComponent(run)}`);
+  es.onopen = () => { $('#status').className = 'live'; $('#state').textContent = run.toUpperCase(); };
+  es.onerror = () => { $('#status').className = ''; $('#state').textContent = 'RECONNECTING'; };
+  es.onmessage = e => ingest(JSON.parse(e.data));
+}
+
+async function loadRuns(selected) {
+  const runs = await (await fetch('runs')).json();
+  $('#run').innerHTML = runs.map(r => `<option ${r === selected ? 'selected' : ''}>${esc(r)}</option>`).join('');
+}
+$('#run').onchange = e => connect(e.target.value);
+$('#go').onclick = async () => {
+  const resp = await fetch(`replay?file=${encodeURIComponent($('#file').value)}&speed=${$('#speed').value}`, {method: 'POST'});
+  if (!resp.ok) return alert('Replay failed: ' + resp.status + ' (is there a file in data/replays?)');
+  const {run} = await resp.json();
+  await loadRuns(run);
+  connect(run);
+};
+fetch('replays').then(r => r.json()).then(fs => $('#file').innerHTML = fs.map(f => `<option>${esc(f)}</option>`).join(''));
+
+// ---- rendering, twice a second ----
+const shown = {};
+const html = (sel, s) => { if (shown[sel] !== s) $(sel).innerHTML = shown[sel] = s; };
+
+function fit(c) {
+  const r = c.getBoundingClientRect(), d = devicePixelRatio || 1;
+  if (c.width !== Math.round(r.width * d) || c.height !== Math.round(r.height * d)) { c.width = Math.round(r.width * d); c.height = Math.round(r.height * d); }
+  const g = c.getContext('2d');
+  g.setTransform(d, 0, 0, d, 0, 0);
+  return [g, r.width, r.height];
+}
+
+function pivotOf(ticks, filingTs) {  // same rule as trader.py: high of the first 6 regular bars after the filing
+  const reg = ticks.filter(t => t.session === 'regular' && t.ts > filingTs);
+  return reg.length >= 6 ? Math.max(...reg.slice(0, 6).map(t => t.price)) : null;
+}
+
+function drawChart() {
+  const [g, W, H] = fit($('#chart'));
+  g.clearRect(0, 0, W, H);
+  g.font = '11px ui-monospace, Menlo, monospace';
+  const T = S.ticks;
+  if (T.length < 2) { g.fillStyle = '#6f8296'; g.fillText('No prices yet: pick a recorded day and press Replay', 12, 20); return; }
+  const v = S.verdict?.status === 'done' ? S.verdict : null;
+  const pos = S.pnl?.positions?.[T[0].ticker];
+  const piv = S.filing ? pivotOf(T, S.filing.ts) : null;
+  const levels = [...T.map(t => t.price), v?.buy_low, v?.buy_high, pos?.stop, piv].filter(x => x != null);
+  let lo = Math.min(...levels), hi = Math.max(...levels);
+  const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
+  const L = 8, R = W - 70, TOP = 8, B = H - 20;
+  const x = i => L + (R - L) * i / (T.length - 1), y = p => B - (B - TOP) * (p - lo) / (hi - lo);
+  const hline = (p, color, dash, label) => {
+    g.strokeStyle = color; g.setLineDash(dash); g.beginPath(); g.moveTo(L, y(p)); g.lineTo(R, y(p)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = color; g.fillText(label, R + 4, y(p) + 4);
+  };
+  if (v?.buy_low != null) { g.fillStyle = '#3ddc8422'; g.fillRect(L, y(v.buy_high), R - L, y(v.buy_low) - y(v.buy_high)); }
+  T.forEach((t, i) => { if (t.session !== 'regular') { g.fillStyle = '#ffffff06'; g.fillRect(x(i) - (R - L) / T.length / 2, TOP, (R - L) / T.length, B - TOP); } });
+  if (S.filing) {
+    const i = T.findIndex(t => t.ts >= S.filing.ts);
+    if (i >= 0) { g.strokeStyle = '#4da3ff'; g.beginPath(); g.moveTo(x(i), TOP); g.lineTo(x(i), B); g.stroke(); g.fillStyle = '#4da3ff'; g.fillText('8-K', x(i) + 3, TOP + 10); }
+  }
+  if (piv != null) hline(piv, '#ffd166', [4, 4], `pivot ${piv.toFixed(2)}`);
+  if (pos?.stop) hline(pos.stop, '#ff5c6c', [2, 3], `stop ${pos.stop.toFixed(2)}`);
+  g.strokeStyle = '#d3dce6'; g.lineWidth = 1.5; g.beginPath();
+  T.forEach((t, i) => i ? g.lineTo(x(i), y(t.price)) : g.moveTo(x(i), y(t.price)));
+  g.stroke(); g.lineWidth = 1;
+  for (const f of S.fills) {
+    const i = T.findIndex(t => t.ts >= f.ts);
+    if (i < 0) continue;
+    const buy = f.side === 'BUY', px = x(i), py = y(f.price), d = buy ? 1 : -1;
+    g.fillStyle = buy ? '#3ddc84' : '#ff5c6c';
+    g.beginPath(); g.moveTo(px, py + 4 * d); g.lineTo(px - 6, py + 13 * d); g.lineTo(px + 6, py + 13 * d); g.fill();
+    g.fillText(S.orders.get(f.order_id)?.rule || f.side, px + 8, py + 13 * d);
+  }
+  g.fillStyle = '#6f8296';
+  g.fillText(et(T[0].ts), L, H - 4);
+  const end = et(T.at(-1).ts); g.fillText(end, R - g.measureText(end).width, H - 4);
+}
+
+function renderResearch() {
+  const v = S.verdict, s = S.started;
+  if (v?.status === 'done') {
+    const m = v.masters;
+    html('#rsrc', `${esc(v.source)} · ${v.duration_s}s`);
+    html('#research', `<div><span class="badge ${esc(v.verdict)}">${esc(v.verdict)}</span> <b class="num">${v.score}/5</b> · ${esc(v.ticker)} /${esc(v.skill)}</div>
+      <div class="kv"><span class="dim">Buffett</span><span>${m.buffett}</span><span class="dim">Munger</span><span>${m.munger}</span>
+      <span class="dim">Duan</span><span>${m.duan}</span><span class="dim">Li Lu</span><span>${m.lilu}</span>
+      <span class="dim">Buy band</span><span>${usd(v.buy_low)} – ${usd(v.buy_high)}</span><span class="dim">Target</span><span>${usd(v.target)}</span></div>
+      <div>${esc(v.summary)}</div>
+      ${v.red_lines.length ? `<div class="dim" style="margin-top:6px">Red lines: ${v.red_lines.map(esc).join(' · ')}</div>` : ''}
+      <div class="dim" style="margin-top:6px">${esc(v.report_path)}</div>`);
+  } else if (v?.status === 'failed') {
+    html('#rsrc', ''); html('#research', `<span class="down">Research failed</span> <span class="dim">${esc(v.error)}</span>`);
+  } else if (s) {
+    const secs = Math.round((Date.now() - s.wall) / 1000);
+    html('#rsrc', ''); html('#research', `🔬 4 masters researching <b>${esc(s.ticker)}</b>… <span class="num">${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}</span>
+      <div class="dim">Buffett · Munger · Duan Yongping · Li Lu are reading the filing</div>`);
+  }
+}
+
+function renderTimeline() {
+  const fills = S.fills.map(f => {
+    const o = S.orders.get(f.order_id) || {};
+    return [f.ts, f.side === 'BUY' ? '🟢' : '🔴', `${f.side} ${f.qty} ${f.ticker} @ ${usd(f.price)} · ${o.rule || ''}${o.reason ? ' — ' + o.reason : ''}`];
+  });
+  const rows = [...S.events, ...fills].sort((a, b) => a[0] - b[0]);
+  html('#timeline', rows.map(([ts, icon, text, url]) =>
+    `<li><span class="dim">${et(ts)}</span> ${icon} ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(text)}</a>` : esc(text)}</li>`).join(''));
+}
+
+function renderPnl() {
+  const p = S.pnl, T = S.ticks;
+  const first = S.filing ? T.find(t => t.ts > S.filing.ts) : null;
+  const bh = first && T.length ? T.at(-1).price / first.price - 1 : null;
+  const strat = p ? p.equity / CASH0 - 1 : null;
+  html('#bh', bh == null ? '' : `strategy <span class="${strat >= 0 ? 'up' : 'down'}">${pct(strat ?? 0)}</span> vs buy &amp; hold <span class="${bh >= 0 ? 'up' : 'down'}">${pct(bh)}</span>`);
+  if (!p) return html('#pnl', '<span class="dim">No trades yet.</span>');
+  const rows = Object.entries(p.positions).map(([tk, q]) => `<div>${esc(tk)} ${q.qty} @ ${usd(q.avg)} · last ${usd(q.last)} · stop ${usd(q.stop)}</div>`).join('');
+  html('#pnl', `<div class="kv"><span class="dim">Equity</span><b>${usd(p.equity)}</b><span class="dim">Realized</span><span class="${p.realized >= 0 ? 'up' : 'down'}">${usd(p.realized)}</span>
+    <span class="dim">Unrealized</span><span class="${p.unrealized >= 0 ? 'up' : 'down'}">${usd(p.unrealized)}</span><span class="dim">Cash</span><span>${usd(p.cash)}</span></div>${rows || '<div class="dim">Flat.</div>'}`);
+}
+
+function renderNews() {
+  html('#news', S.news.slice(0, 40).map(n =>
+    `<li><span class="dim">${et(n.ts)} · ${esc(n.src)} · ${esc(n.tk)}</span><br><a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.text)}</a></li>`).join('')
+    || '<li class="dim">No watchlist news yet.</li>');
+}
+
+function render() {
+  const last = S.ticks.at(-1);
+  html('#tk', last ? `${esc(last.ticker)} ${usd(last.price)} · ${esc(last.session)} · ${et(last.ts)}` : '');
+  drawChart(); renderResearch(); renderTimeline(); renderPnl(); renderNews();
+}
+
+reset();
+loadRuns('live');
+connect('live');
+setInterval(render, 500);
+</script>
+</body>
+</html>
