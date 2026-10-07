@@ -60,6 +60,26 @@ value.converter.schema.registry.url=http://schema-registry:8081
 Downstream jobs can route on `kind`. To change the schema, edit `hn_event.avsc` and restart the
 producer. It registers the new version on start and refuses to run if the change isn't backward compatible.
 
+## Publish to StreamNative Cloud
+
+The producer and the dashboard can use a StreamNative Cloud cluster, through its Kafka protocol
+and Kafka Schema Registry, instead of the local containers:
+
+```sh
+cp .env.example .env    # fill it in; .env is git-ignored
+docker compose up -d --build
+```
+
+- **Kafka cluster:** set `KAFKA_USERNAME` to the service account the API key belongs to, the `userName` in the console's client example. The broker rejects any other username.
+- **Pulsar cluster:** leave `KAFKA_USERNAME` empty, so it defaults to `public/default`, and append `/kafka` to the Schema Registry URL.
+- The service account needs produce and consume permission on the topic, plus the `schema-writer` role.
+- On start the producer registers the schema and creates `hn-events` with one partition. If the account can't create topics, create `hn-events` yourself with one partition.
+- On a Pulsar cluster, give `public/default` a retention policy, e.g. 7 days. Otherwise Pulsar can drop messages that no subscription holds, and the dashboard's one-hour replay comes back empty.
+- Other services connect the same way. Kafka uses SASL/PLAIN over TLS with the username above and password `token:<JWT>`. The registry uses basic auth with the bare JWT as password. See [`config.py`](config.py).
+
+To go back to local, move `.env` aside and run `docker compose up -d` again. The local Kafka and
+Schema Registry containers keep running in either mode.
+
 ## Dashboard
 
 - **Radar**: the 30 front-page stories. Distance from the center is the rank (#1 in the middle). The angle is fixed per story, so you can watch stories move in or out. Color goes from green to orange as the story gains points over 30 minutes. A ring pulses when a story gets new votes or comments. The outer band shows new submissions from the last 10 minutes.
@@ -74,5 +94,5 @@ browser reconnects it picks up exactly where it left off.
 
 ## Known limits
 
-- The dashboard assumes `hn-events` has a single partition, which is what Kafka auto-creates.
+- The dashboard reads partition 0 only. The producer creates the topic with one partition, and warns if an existing topic has more.
 - If the producer restarts, items created while it was down are not backfilled.

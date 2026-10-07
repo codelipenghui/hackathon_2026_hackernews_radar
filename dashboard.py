@@ -16,12 +16,13 @@ from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroDeserializer
 from confluent_kafka.serialization import MessageField, SerializationContext, SerializationError
 
-KAFKA = os.environ.get("KAFKA", "localhost:9092")
-TOPIC = os.environ.get("TOPIC", "hn-events")
+import config
+
+TOPIC = config.TOPIC
 PORT = int(os.environ.get("PORT", 8080))
 REPLAY_MS = 60 * 60 * 1000
 PAGE = Path(__file__).with_name("index.html")
-deserialize = AvroDeserializer(SchemaRegistryClient({"url": os.environ.get("SCHEMA_REGISTRY", "http://localhost:8081")}))
+deserialize = AvroDeserializer(SchemaRegistryClient(config.registry_conf))
 context = SerializationContext(TOPIC, MessageField.VALUE)
 
 
@@ -48,7 +49,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         # ponytail: assumes the single-partition topic Kafka auto-creates, so an offset is a full position;
         # with more partitions the SSE id would need to carry one offset per partition
-        consumer = Consumer({"bootstrap.servers": KAFKA, "group.id": "hn-radar-dashboard", "enable.auto.commit": False})
+        consumer = Consumer({
+            **config.kafka_conf,
+            "group.id": "hn-radar-dashboard",
+            "enable.auto.commit": False,
+            "isolation.level": "read_uncommitted",  # no transactions here, and Ursa-engine clusters lack read_committed
+        })
         try:
             last_id = self.headers.get("Last-Event-ID")  # sent by EventSource on reconnect
             if last_id:
@@ -58,8 +64,11 @@ class Handler(BaseHTTPRequestHandler):
                 start = consumer.offsets_for_times([since], timeout=10)[0].offset
             consumer.assign([TopicPartition(TOPIC, 0, start)])
             while True:
+                # poll() returns as soon as a record arrives (consume(n, timeout) would wait for all n), then
+                # drain whatever else is already fetched without waiting
+                first = consumer.poll(15)
                 chunk = ""
-                for msg in consumer.consume(500, timeout=15):
+                for msg in [first, *consumer.consume(499, timeout=0)] if first else []:
                     if msg.error():
                         continue
                     try:
@@ -74,5 +83,5 @@ class Handler(BaseHTTPRequestHandler):
             consumer.close()
 
 
-print(f"HN radar on http://localhost:{PORT}  (kafka {KAFKA}, topic {TOPIC!r})")
+print(f"HN radar on http://localhost:{PORT}  (kafka {config.KAFKA}, topic {TOPIC!r})")
 ThreadingHTTPServer(("", PORT), Handler).serve_forever()

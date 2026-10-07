@@ -10,31 +10,46 @@ HN publishes maxitem / updates / topstories in ~30s ticks. Each change becomes o
   TOP      items   the current front page (top 30)
 """
 import json
-import os
 import threading
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from confluent_kafka import Producer
+from confluent_kafka import KafkaError, KafkaException, Producer
+from confluent_kafka.admin import AdminClient, NewTopic
 from confluent_kafka.schema_registry import Schema, SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 
+import config
+
 API = "https://hacker-news.firebaseio.com/v0"
-TOPIC = os.environ.get("TOPIC", "hn-events")
+TOPIC = config.TOPIC
 SCHEMA = Path(__file__).with_name("hn_event.avsc").read_text()
 
-registry = SchemaRegistryClient({"url": os.environ.get("SCHEMA_REGISTRY", "http://localhost:8081")})
+registry = SchemaRegistryClient(config.registry_conf)
 schema_id = registry.register_schema(f"{TOPIC}-value", Schema(SCHEMA, "AVRO"))  # fails fast if incompatible
 serialize = AvroSerializer(registry, SCHEMA)
 context = SerializationContext(TOPIC, MessageField.VALUE)
+
+admin = AdminClient(config.kafka_conf)
+try:  # the dashboard reads partition 0 only, so the topic must have exactly one partition
+    admin.create_topics([NewTopic(TOPIC, 1)])[TOPIC].result()
+except KafkaException as e:
+    if e.args[0].code() != KafkaError.TOPIC_ALREADY_EXISTS:
+        print(f"could not create topic {TOPIC!r}: {e.args[0].str()} - create it with 1 partition")
+partitions = len(admin.list_topics(TOPIC, timeout=30).topics[TOPIC].partitions)
+if partitions != 1:
+    print(f"warning: topic {TOPIC!r} has {partitions} partitions, the dashboard only reads partition 0")
+
 producer = Producer({
-    "bootstrap.servers": os.environ.get("KAFKA", "localhost:9092"),
+    **config.kafka_conf,
     "enable.idempotence": True,
     "compression.type": "gzip",
     "linger.ms": 100,
+    "delivery.report.only.error": True,  # e.g. a missing produce permission would otherwise fail silently
+    "on_delivery": lambda err, msg: print(f"delivery to {msg.topic()} failed: {err.str()}"),
 })
 pool = ThreadPoolExecutor(16)
 
@@ -125,5 +140,5 @@ def on_topstories(ids):
 
 for path, handler in [("maxitem", on_maxitem), ("updates", on_updates), ("topstories", on_topstories)]:
     threading.Thread(target=follow, args=(path, handler), daemon=True).start()
-print(f"streaming Hacker News -> kafka topic {TOPIC!r} (Avro, schema id {schema_id})")
+print(f"streaming Hacker News -> {config.KAFKA} topic {TOPIC!r} (Avro, schema id {schema_id})")
 threading.Event().wait()
