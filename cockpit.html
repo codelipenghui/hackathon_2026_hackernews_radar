@@ -45,6 +45,9 @@
   .live-only, .replay-only { display: inline-flex; align-items: center; gap: 12px; }
   body.replay .live-only, body:not(.replay) .replay-only { display: none; }
   #research { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }  /* verdicts can be long */
+  li.triage { border-left: 2px solid var(--line); }
+  li.triage.down { border-left-color: var(--sell); background: #ff5c6c0d; }
+  li.triage.up { border-left-color: var(--buy); background: #3ddc840d; }
   .tier { display: inline-block; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; font-size: 11px; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; grid-template-rows: none; } }
 </style>
@@ -79,13 +82,13 @@
     <div id="research" class="dim">Waiting for an earnings filing…</div>
   </section>
   <section class="panel">
-    <h2>Decision timeline</h2>
+    <h2>Decision timeline <small id="tl-tk"></small></h2>
     <ol id="timeline"></ol>
   </section>
   <section class="panel">
     <h2>P&amp;L <small id="bh"></small></h2>
     <div id="pnl" class="num"></div>
-    <h2 style="margin-top:10px">News · HN mentions</h2>
+    <h2 style="margin-top:10px">News · HN mentions <small id="news-tk"></small></h2>
     <ul id="news"></ul>
   </section>
 </main>
@@ -128,7 +131,7 @@ function ingest(m) {
       S.filing = m;
       S.filings.set(m.ticker, m);
       if (RUN !== 'live') $('#ticker').value = m.ticker;  // a replay follows its company; live keeps your choice
-      S.events.push([m.ts, '📄', `${m.ticker} filed ${m.form}${m.items.length ? ' · items ' + m.items.join(', ') : ''}`, m.url]);
+      event(m, '📄', `filed ${m.form}${m.items.length ? ' · items ' + m.items.join(', ') : ''}`, m.url);
       break;
     case 'ticks':
       if (!S.ticksBy.has(m.ticker)) S.ticksBy.set(m.ticker, []);
@@ -146,26 +149,32 @@ function ingest(m) {
       break;
     }
     case 'skill-requests':
-      S.events.push([m.ts, '⚡', `router: ${m.reason} → /${m.skill} ${m.args}`]);
+      if (m.skill === 'news-recheck') event(m, '📰', `news re-check requested → quick re-verdict`);
+      else event(m, '⚡', `router: ${m.reason} → ${m.depth === 'deep' ? 'deep research' : m.depth === 'quick' ? 'quick check' : 'quick check, then deep research'}`);
       break;
     case 'research-verdicts': {
       m.tier = m.tier || 'deep';  // verdicts from before tiers existed were all /earnings-review
       const tier = TIER[m.tier] || m.tier;
       const r = researchOf(m.ticker);
-      if (m.status === 'started') { r.running.set(m.tier, m); S.events.push([m.ts, '', `${m.ticker} ${tier} research started`]); break; }
+      if (m.status === 'started') { r.running.set(m.tier, m); event(m, '', `${tier} research started`); break; }
       r.running.delete(m.tier);
-      if (m.status === 'done') { r.verdict = m; r.failed = null; S.events.push([m.ts, '⚖️', `${m.ticker} ${tier} verdict ${m.verdict} ${m.score}/5 · buy ${usd(m.buy_low)}–${usd(m.buy_high)} · ${m.source}`]); }
-      else { r.failed = m; S.events.push([m.ts, '⚠️', `${m.ticker} ${tier} research failed: ${m.error || ''}`]); }
+      if (m.status === 'done') { r.verdict = m; r.failed = null; event(m, '⚖️', `${tier} verdict ${m.verdict} ${m.score}/5 · buy ${usd(m.buy_low)}–${usd(m.buy_high)} · ${m.source}`); }
+      else { r.failed = m; event(m, '⚠️', `${tier} research failed: ${m.error || ''}`); }
       break;
     }
     case 'news-triage':
-      S.events.push([m.ts, '📰', `${m.material ? 'material' : 'not material'} (${m.ticker}): ${m.reason}${m.material ? ' → news re-check' : ''} — “${m.headline}”`, m.url]);
+      event(m, '📰', `triage (${m.source}): “${m.headline}” → ${m.material ? `MATERIAL, ${m.direction}` : 'not material'}: ${m.reason}`,
+            m.url, m.material ? `triage ${m.direction === 'positive' ? 'up' : 'down'}` : 'triage');
       break;
     case 'orders': S.orders.set(m.order_id, m); break;
     case 'fills': S.fills.push(m); break;
     case 'pnl': S.pnl = m; break;
   }
   if (S.news.length > 100) S.news.length = 100;
+}
+
+function event(m, icon, text, url, cls = '') {  // timeline entries carry their ticker so the timeline can follow it
+  S.events.push({ts: m.ts, tk: m.ticker, icon, text, url, cls});
 }
 
 function addNews(n) {  // pollers re-send their feed after a restart: show each headline once
@@ -347,18 +356,21 @@ function renderResearch() {
 }
 
 function renderTimeline() {
-  const fills = S.fills.map(f => {
+  const tk = focus();
+  const fills = S.fills.filter(f => f.ticker === tk).map(f => {
     const o = S.orders.get(f.order_id) || {};
-    return [f.ts, f.side === 'BUY' ? '🟢' : '🔴', `${f.side} ${f.qty} ${f.ticker} @ ${usd(f.price)} · ${o.rule || ''}${o.reason ? ' — ' + o.reason : ''}`];
+    return {ts: f.ts, icon: f.side === 'BUY' ? '🟢' : '🔴', text: `${f.side} ${f.qty} @ ${usd(f.price)} · ${o.rule || ''}${o.reason ? ' — ' + o.reason : ''}`};
   });
-  const rows = [...S.events, ...fills].sort((a, b) => a[0] - b[0]);
-  html('#timeline', rows.map(([ts, icon, text, url]) =>
-    `<li><span class="dim">${et(ts)}</span> ${icon} ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(text)}</a>` : esc(text)}</li>`).join(''));
+  const rows = [...S.events.filter(e => e.tk === tk), ...fills].sort((a, b) => a.ts - b.ts);
+  $('#tl-tk').textContent = tk;
+  html('#timeline', rows.map(e =>
+    `<li class="${e.cls || ''}"><span class="dim">${et(e.ts)}</span> ${e.icon} ${e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.text)}</a>` : esc(e.text)}</li>`).join('')
+    || `<li class="dim">Nothing has happened for ${esc(tk)} yet.</li>`);
 }
 
 function renderPnl() {
-  const p = S.pnl, T = S.filing ? ticksOf(S.filing.ticker) : [];
-  const first = S.filing ? T.find(t => t.ts > S.filing.ts) : null;
+  const fl = S.filings.get(focus()), p = S.pnl, T = fl ? ticksOf(fl.ticker) : [];
+  const first = fl ? T.find(t => t.ts > fl.ts) : null;
   const bh = first && T.length ? T.at(-1).price / first.price - 1 : null;
   const strat = p ? p.equity / CASH0 - 1 : null;
   html('#bh', bh == null ? '' : `strategy <span class="${strat >= 0 ? 'up' : 'down'}">${pct(strat ?? 0)}</span> vs buy &amp; hold <span class="${bh >= 0 ? 'up' : 'down'}">${pct(bh)}</span>`);
@@ -369,9 +381,11 @@ function renderPnl() {
 }
 
 function renderNews() {
-  html('#news', S.news.slice(0, 40).map(n =>
+  const tk = focus();
+  $('#news-tk').textContent = tk;
+  html('#news', S.news.filter(n => n.tk === tk).slice(0, 40).map(n =>
     `<li><span class="dim">${et(n.ts)} · ${esc(n.src)} · ${esc(n.tk)}</span><br><a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.text)}</a></li>`).join('')
-    || '<li class="dim">No watchlist news yet.</li>');
+    || `<li class="dim">No ${esc(tk)} news in the last day (HN: last hour).</li>`);
 }
 
 function render() {
