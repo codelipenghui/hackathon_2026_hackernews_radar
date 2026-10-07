@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HN Radar</title>
+<style>
+  :root {
+    --bg: #070b10; --panel: #0c131bcc; --line: #1a2531; --text: #d3dce6; --dim: #6f8296;
+    --story: #ff7a1a; --comment: #4da3ff; --update: #3ddc84; --profile: #b48cff; --down: #ff5c6c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; color: var(--text);
+    background: radial-gradient(ellipse at 15% -20%, #102331, var(--bg) 60%) fixed;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  a { color: inherit; text-decoration: none; }
+  a:hover { color: #fff; text-decoration: underline; }
+  .dim { color: var(--dim); }
+  em { font-style: normal; color: var(--story); }
+
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+  .logo { font-weight: 700; letter-spacing: .22em; }
+  .logo b { display: inline-block; width: 22px; margin-right: 10px; background: var(--story); color: #fff; text-align: center; letter-spacing: 0; }
+  #status { margin-left: auto; color: var(--dim); }
+  #status i { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--down); }
+  #status.live i { background: var(--update); box-shadow: 0 0 10px var(--update); animation: pulse 2s infinite; }
+  #status b { color: var(--text); font-weight: 600; }
+  @keyframes pulse { 50% { opacity: .3; } }
+
+  .kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; padding: 12px 18px 0; }
+  .kpi { padding: 8px 14px; background: var(--panel); border: 1px solid var(--line); border-top: 2px solid var(--c); border-radius: 6px; }
+  .kpi b { display: block; font-size: 26px; line-height: 1.25; color: var(--c); font-variant-numeric: tabular-nums; }
+  .kpi span { color: var(--dim); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 12px; padding: 12px 18px 18px; }
+  .col { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .panel { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  h2 { display: flex; gap: 10px; margin: 0 0 8px; color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
+  h2 small { margin-left: auto; font-weight: 400; letter-spacing: 0; text-transform: none; }
+  .canvas { position: relative; flex: 1; min-height: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .caption { margin: 6px 0 0; font-size: 11px; }
+  .legend i { font-style: normal; }
+  .legend i::before { content: ""; display: inline-block; width: 8px; height: 8px; margin: 0 4px 0 10px; border-radius: 2px; background: var(--c); }
+  #tip { position: absolute; z-index: 1; max-width: 300px; padding: 6px 9px; pointer-events: none; background: #081018f2; border: 1px solid #2a3a4a; border-radius: 4px; }
+
+  ol, ul { flex: 1; min-height: 0; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+  li { display: grid; align-items: baseline; gap: 10px; padding: 3px 6px; border-radius: 4px; white-space: nowrap; }
+  li:hover { background: #ffffff0a; }
+  li > a { overflow: hidden; text-overflow: ellipsis; }
+  li i { font-style: normal; font-size: 11px; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .head { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+  .head:hover { background: none; }
+
+  #front li { grid-template-columns: 2ch 5ch minmax(0, 1fr) 10ch 5ch; }
+  #front li > :first-child { text-align: right; }
+  .up { color: var(--update); } .down { color: var(--down); } .new { color: var(--story); }
+  .flash .pts { animation: flash 2.5s ease-out; }
+  @keyframes flash { from { color: #fff; background: #ff7a1a88; } }
+
+  #rising li { grid-template-columns: 5ch minmax(0, 1fr) auto; background: linear-gradient(90deg, #ff7a1a24 var(--w), transparent var(--w)); margin-bottom: 2px; }
+  #rising b { color: var(--story); text-align: right; }
+
+  #feed li { grid-template-columns: 8ch 8ch minmax(0, 1fr); }
+  #feed .tag { padding: 0 4px; font-size: 10px; line-height: 16px; text-align: center; text-transform: uppercase; border: 1px solid; border-radius: 3px; color: var(--comment); }
+  #feed .story .tag { color: var(--story); }
+  #feed .story b { color: #fff; }
+  .fresh { animation: fresh 3s ease-out; }
+  @keyframes fresh { from { background: #4da3ff40; } }
+
+  @media (max-width: 1100px) {
+    html, body { height: auto; }
+    .kpis { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+    main { grid-template-columns: 1fr; }
+    main > * { height: 760px; flex: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><b>Y</b>HN RADAR</div>
+  <span class="dim">Hacker News firebase stream → Kafka → you</span>
+  <div id="status"><i></i><b id="state">CONNECTING</b> · <span id="meta"></span></div>
+</header>
+
+<section class="kpis">
+  <div class="kpi" style="--c: #fff"><b id="k-rate">–</b><span>events / min (5m avg)</span></div>
+  <div class="kpi" style="--c: var(--story)"><b id="k-story">–</b><span>new stories · 1h</span></div>
+  <div class="kpi" style="--c: var(--comment)"><b id="k-comment">–</b><span>new comments · 1h</span></div>
+  <div class="kpi" style="--c: var(--update)"><b id="k-update">–</b><span>item updates · 1h</span></div>
+  <div class="kpi" style="--c: var(--profile)"><b id="k-profile">–</b><span>profile updates · 1h</span></div>
+</section>
+
+<main>
+  <div class="col">
+    <section class="panel" style="flex: 1.9">
+      <h2>Front-page radar</h2>
+      <div class="canvas"><canvas id="radar" aria-label="Radar of the 30 front-page stories"></canvas><div id="tip" hidden></div></div>
+      <p class="caption dim">center = #1 → ring = #30 · <span style="color:#3ddc84">green</span>→<em>orange</em> = points gained in 30m · pulse = new votes/comments · ■ outer band = new submissions</p>
+    </section>
+    <section class="panel">
+      <h2>Activity / minute
+        <small class="legend"><i style="--c: var(--update)">updates</i><i style="--c: var(--comment)">comments</i><i style="--c: var(--profile)">profiles</i><i style="--c: var(--story)">stories</i></small>
+      </h2>
+      <div class="canvas"><canvas id="chart" aria-label="Events per minute, last hour"></canvas></div>
+    </section>
+  </div>
+  <section class="panel">
+    <h2>Front page <small class="dim">Δ = rank change vs 30 min ago</small></h2>
+    <ol id="front"></ol>
+  </section>
+  <div class="col">
+    <section class="panel">
+      <h2>Rising <small class="dim">points gained in the last 30 min</small></h2>
+      <ol id="rising"></ol>
+    </section>
+    <section class="panel" style="flex: 1.4">
+      <h2>Live feed <small class="dim">new stories &amp; comments</small></h2>
+      <ul id="feed"></ul>
+    </section>
+  </div>
+</main>
+
+<script type="module">
+const $ = s => document.querySelector(s);
+const TAU = Math.PI * 2, HOUR = 3600e3, RISE = 30 * 60e3, CONTACT = 10 * 60e3;
+const COLOR = {update: '#3ddc84', comment: '#4da3ff', profile: '#b48cff', story: '#ff7a1a'};
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+const itemUrl = id => `https://news.ycombinator.com/item?id=${id}`;
+const domain = u => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } };
+const clock = t => new Date(t).toLocaleTimeString([], {hour12: false});
+const ago = ms => ms < 60e3 ? `${Math.max(0, Math.round(ms / 1e3))}s` : ms < HOUR ? `${Math.round(ms / 60e3)}m` : `${Math.round(ms / HOUR)}h`;
+const plain = h => new DOMParser().parseFromString((h || '').replace(/<p>/g, ' '), 'text/html').body.textContent;
+const bearing = id => (Math.imul(id, 2654435761) >>> 0) / 2 ** 32 * TAU;  // stable pseudo-random angle per story
+const jitter = id => (Math.imul(id, 40503) >>> 0) % 997 / 997;
+const ringR = i => 0.1 + 0.78 * i / 29;  // front-page rank (0..29) -> radius as a fraction of R
+
+// ---- state, rebuilt from the Kafka topic (the server replays the last hour on connect) ----
+let events = [];                                     // [ts, 'story' | 'comment' | 'update' | 'profile']
+const stories = new Map();                           // id -> {item, hist: [[ts, score, comments]], changed}
+let front = [], frontIds = new Set(), frontHist = []; // current top 30 + earlier snapshots for rank movement
+let feed = [], contacts = [], pings = [], heat = new Map();
+let offset = '–', lastTs = 0;
+
+function track(it, t) {
+  let s = stories.get(it.id);
+  if (!s) stories.set(it.id, s = {hist: []});
+  const prev = s.item;
+  s.item = it;
+  s.hist.push([t, it.score || 0, it.descendants || 0]);
+  if (prev && (prev.score !== it.score || prev.descendants !== it.descendants)) {
+    s.changed = t;
+    if (Date.now() - t < 60e3 && frontIds.has(it.id))  // live change on the front page -> radar pulse
+      pings.push({id: it.id, t0: performance.now() + Math.random() * 2500});
+  }
+}
+
+function ingest(ev) {
+  const {ts: t, kind, item: it} = ev;
+  lastTs = Math.max(lastTs, t);
+  if (kind === 'top') {
+    front = ev.items;
+    frontIds = new Set(front.map(s => s.id));
+    front.forEach(s => track(s, t));
+    frontHist.push({t, ranks: new Map(front.map((s, i) => [s.id, i]))});
+    return;
+  }
+  events.push([t, kind === 'new' ? (it.type === 'comment' ? 'comment' : 'story') : kind]);
+  if (!it || it.dead || it.deleted) return;
+  if (it.type === 'story') track(it, t);
+  if (kind === 'new') {
+    feed.unshift({t, it});
+    if (feed.length > 200) feed.pop();
+    if (it.type === 'story') contacts.push({t, it});
+  }
+}
+
+const es = new EventSource('events');  // the SSE id is the Kafka offset, so reconnects resume exactly
+const live = ok => { $('#status').className = ok ? 'live' : ''; $('#state').textContent = ok ? 'LIVE' : 'RECONNECTING'; };
+es.onopen = () => live(true);
+es.onerror = () => live(false);
+es.onmessage = e => { offset = e.lastEventId; ingest(JSON.parse(e.data)); };
+
+// ---- panels, re-rendered once a second (DOM only touched when the markup changed) ----
+const shown = {};
+const html = (sel, s) => { if (shown[sel] !== s) $(sel).innerHTML = shown[sel] = s; };
+const link = (id, body, title) => `<a href="${itemUrl(id)}" target="_blank" rel="noopener" title="${esc(title)}">${body}</a>`;
+
+function render() {
+  const now = Date.now();
+  events = events.filter(e => e[0] > now - HOUR);
+  contacts = contacts.filter(c => c.t > now - CONTACT);
+  while (frontHist.length > 1 && frontHist[1].t <= now - RISE) frontHist.shift();
+  for (const [id, s] of stories) {
+    s.hist = s.hist.filter(h => h[0] > now - HOUR);
+    if (!s.hist.length) stories.delete(id);
+  }
+
+  const n = {story: 0, comment: 0, update: 0, profile: 0};
+  let last5 = 0;
+  for (const [t, type] of events) { n[type]++; if (t > now - 5 * 60e3) last5++; }
+  for (const k in n) $('#k-' + k).textContent = n[k].toLocaleString();
+  $('#k-rate').textContent = Math.round(last5 / 5).toLocaleString();
+  $('#meta').innerHTML = `topic <b>hn-events</b> · offset <b>${offset}</b> · last event <b>${lastTs ? ago(now - lastTs) : '–'}</b> ago`;
+
+  // heat = points gained since ~30 min ago (or since first seen, for younger stories)
+  const rising = [];
+  heat = new Map();
+  for (const s of stories.values()) {
+    const h = s.hist, last = h[h.length - 1];
+    let base = h[0];
+    for (const x of h) { if (x[0] > now - RISE) break; base = x; }
+    const pts = last[1] - base[1];
+    heat.set(s.item.id, pts);
+    if (pts > 0) rising.push({s: s.item, pts, cmts: last[2] - base[2]});
+  }
+  rising.sort((a, b) => b.pts - a.pts);
+
+  const was = frontHist[0]?.ranks;
+  html('#front', front.length ? '<li class="head dim"><span>#</span><span>Δ</span><span>story</span><span class="num">points</span><span class="num">cmts</span></li>' + front.map((f, i) => {
+    const s = stories.get(f.id)?.item || f, r = was?.get(s.id), g = heat.get(s.id) || 0;
+    const mv = r === undefined ? '<i class="new">new</i>' : r > i ? `<i class="up">▲${r - i}</i>` : r < i ? `<i class="down">▼${i - r}</i>` : '<i class="dim">·</i>';
+    return `<li${stories.get(s.id)?.changed > now - 3000 ? ' class="flash"' : ''}><span class="dim">${i + 1}</span>${mv}`
+      + link(s.id, `${esc(s.title)} <small class="dim">${esc(domain(s.url))}</small>`, s.title)
+      + `<span class="num pts">${s.score}${g > 0 ? ` <em>+${g}</em>` : ''}</span><span class="num dim">${s.descendants ?? 0}</span></li>`;
+  }).join('') : '<li class="dim">waiting for the next HN tick…</li>');
+
+  const rs = rising.slice(0, 15), max = rs[0]?.pts || 1;
+  html('#rising', rs.map(r => `<li style="--w: ${(r.pts / max * 100).toFixed(1)}%"><b>+${r.pts}</b>${link(r.s.id, esc(r.s.title), r.s.title)}`
+    + `<span class="dim">${r.s.score} pts · +${r.cmts} cmts</span></li>`).join('') || '<li class="dim">collecting score history…</li>');
+
+  html('#feed', feed.map(e => {
+    const it = e.it, c = it.type === 'comment';
+    const body = c ? `<b>${esc(it.by)}</b> ${esc(e.snip ??= plain(it.text).slice(0, 240))}` : `<b>${esc(it.title)}</b> <small class="dim">${esc(domain(it.url))}</small>`;
+    return `<li class="${c ? 'comment' : 'story'}${now - e.t < 4000 ? ' fresh' : ''}"><time class="dim">${clock(e.t)}</time><i class="tag">${esc(it.type)}</i>${link(it.id, body, c ? e.snip : it.title)}</li>`;
+  }).join('') || '<li class="dim">waiting for new items…</li>');
+
+  drawChart(now);
+}
+setInterval(render, 1000);
+
+function fit(canvas) {  // match the backing store to the CSS size (crisp on retina)
+  const dpr = devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+  if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  Object.assign(ctx, {font: '10px ui-monospace, Menlo, monospace', textAlign: 'left', textBaseline: 'alphabetic', lineWidth: 1});
+  return {ctx, W, H};
+}
+
+function drawChart(now) {  // stacked events per minute over the last hour
+  const {ctx, W, H} = fit($('#chart'));
+  const N = 60, B = 60e3, end = Math.ceil(now / B) * B, bottom = H - 16, kinds = Object.keys(COLOR);
+  const bins = Array.from({length: N}, () => ({update: 0, comment: 0, profile: 0, story: 0}));
+  for (const [t, type] of events) {
+    const i = N - 1 - Math.floor((end - t - 1) / B);
+    if (i >= 0 && i < N) bins[i][type]++;
+  }
+  const max = Math.max(1, ...bins.map(b => kinds.reduce((sum, k) => sum + b[k], 0)));
+  bins.forEach((b, i) => {
+    let y = bottom;
+    for (const k of kinds) {
+      const h = b[k] / max * (bottom - 14);
+      ctx.fillStyle = COLOR[k];
+      ctx.fillRect(i * W / N + 1, y - h, Math.max(1, W / N - 2), h);
+      y -= h;
+    }
+  });
+  ctx.fillStyle = '#6f8296';
+  ctx.fillText('-60m', 0, H - 3);
+  ctx.textAlign = 'center';
+  ctx.fillText('-30m', W / 2, H - 3);
+  ctx.textAlign = 'right';
+  ctx.fillText('now', W, H - 3);
+  ctx.fillText(`peak ${max}/min`, W, 9);
+}
+
+// ---- radar: 60fps canvas animation ----
+const radar = $('#radar'), tip = $('#tip'), blips = new Map();
+let hits = [], hover = null;
+
+function drawRadar(t) {
+  const {ctx, W, H} = fit(radar), now = Date.now();
+  const cx = W / 2, cy = H / 2, R = Math.min(W, H) / 2 - 8, sweep = t / 6000 % 1 * TAU;
+  const at = (a, r) => [cx + Math.cos(a) * r * R, cy + Math.sin(a) * r * R];
+  const green = a => `rgba(61,220,132,${a})`;
+
+  ctx.fillStyle = green(.035);  // outer band: new submissions
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.arc(cx, cy, 0.9 * R, 0, TAU, true); ctx.fill();
+  ctx.strokeStyle = green(.16);
+  ctx.beginPath();
+  for (const r of [ringR(9), ringR(19), ringR(29), 0.9, 1]) { ctx.moveTo(cx + r * R, cy); ctx.arc(cx, cy, r * R, 0, TAU); }
+  for (let a = 0; a < TAU - 1e-9; a += TAU / 12) { ctx.moveTo(cx, cy); ctx.lineTo(...at(a, 1)); }
+  ctx.stroke();
+  ctx.fillStyle = green(.5);
+  [['#10', ringR(9)], ['#20', ringR(19)], ['#30', ringR(29)], ['NEW', .95]].forEach(([s, r]) => ctx.fillText(s, cx + 4, cy - r * R + (r > .9 ? 4 : 11)));
+
+  const g = ctx.createConicGradient(sweep, cx, cy);  // beam with a fading trail behind it
+  g.addColorStop(0, green(0));
+  g.addColorStop(0.8, green(0));
+  g.addColorStop(1, green(.22));
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.fill();
+  ctx.strokeStyle = green(.75);
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(...at(sweep, 1)); ctx.stroke();
+
+  const glow = a => 0.3 + 0.7 * (1 - ((sweep - a) % TAU + TAU) % TAU / TAU);  // phosphor fades after the beam passes
+  hits = [];
+  ctx.textBaseline = 'middle';
+  for (const c of contacts) {
+    const a = bearing(c.it.id), [x, y] = at(a, 0.92 + 0.06 * jitter(c.it.id));
+    ctx.fillStyle = `rgba(255,122,26,${glow(a) * (1 - (now - c.t) / CONTACT)})`;
+    ctx.fillRect(x - 2.5, y - 2.5, 5, 5);
+    hits.push({x, y, size: 3, s: c.it});
+  }
+  for (const id of blips.keys()) if (!frontIds.has(id)) blips.delete(id);
+  front.forEach((f, i) => {
+    const s = stories.get(f.id)?.item || f;
+    let b = blips.get(s.id);
+    if (!b) blips.set(s.id, b = {r: 1});  // newcomers glide in from the edge
+    b.r += (ringR(i) - b.r) * 0.05;
+    const a = bearing(s.id), [x, y] = at(a, b.r), k = glow(a), size = 2.5 + Math.sqrt(s.score || 1) / 4;
+    ctx.shadowColor = ctx.fillStyle = `hsla(${140 - 116 * Math.min(1, (heat.get(s.id) || 0) / 50)},100%,58%,${k})`;
+    ctx.shadowBlur = 14 * k;
+    ctx.beginPath(); ctx.arc(x, y, size, 0, TAU); ctx.fill();
+    ctx.shadowBlur = 0;
+    if (i < 10) { ctx.fillStyle = `rgba(211,220,230,${k})`; ctx.fillText(i + 1, x + size + 4, y); }
+    hits.push({x, y, size, s, rank: i + 1});
+  });
+  pings = pings.filter(p => t - p.t0 < 1800);
+  for (const p of pings) {
+    const age = (t - p.t0) / 1800, h = hits.find(h => h.s.id === p.id);
+    if (age < 0 || !h) continue;
+    ctx.strokeStyle = `rgba(255,200,140,${1 - age})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(h.x, h.y, h.size + age * 26, 0, TAU); ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+  requestAnimationFrame(drawRadar);
+}
+requestAnimationFrame(drawRadar);
+
+radar.onmousemove = e => {
+  const box = radar.getBoundingClientRect(), mx = e.clientX - box.left, my = e.clientY - box.top;
+  hover = null;
+  for (const h of hits) if (Math.hypot(h.x - mx, h.y - my) < h.size + 6) hover = h;
+  radar.style.cursor = hover ? 'pointer' : '';
+  tip.hidden = !hover;
+  if (!hover) return;
+  const s = hover.s, g = heat.get(s.id) || 0;
+  tip.innerHTML = `<b>${hover.rank ? '#' + hover.rank : 'new submission'}</b> · ${s.score ?? 1} pts · ${s.descendants ?? 0} cmts`
+    + `${g > 0 ? ` · <em>+${g} in 30m</em>` : ''}<br>${esc(s.title)} <span class="dim">${esc(domain(s.url))}</span>`;
+  tip.style.left = Math.max(0, Math.min(mx + 14, box.width - tip.offsetWidth)) + 'px';
+  tip.style.top = Math.min(my + 14, box.height - tip.offsetHeight) + 'px';
+};
+radar.onmouseleave = () => { tip.hidden = true; hover = null; };
+radar.onclick = () => hover && window.open(itemUrl(hover.s.id), '_blank', 'noopener');
+</script>
+</body>
+</html>
